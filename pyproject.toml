@@ -1,0 +1,23 @@
+[project]
+name = "bayesify"
+version = "0.0.1"
+authors = [
+  { name="Johannes Donr", email="johannes.dorn@uni-leipzig.de" },
+]
+description = "A package to model NFPs of configurable software systems efficiently with explicit uncertainty"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+#[project.urls]
+#"Homepage" = "https://github.com/pypa/sampleproject"
+#"Bug Tracker" = "https://github.com/pypa/sampleproject/issues"
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
