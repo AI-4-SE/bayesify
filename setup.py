@@ -3,13 +3,12 @@ import setuptools
 setuptools.setup(
     name="bayesify",  # Replace with your own username
     version="0.1",
+    python_requires=">=3.9, <3.10",
     author="Johannes Dorn",
     author_email="johannes.dorn@uni-leipzig.de",
     description="Uncertainty-aware NFP Predictions with Probabilistic Programming",
     long_description_content_type="text/markdown",
-    package_dir={"": "src"},
-    packages=setuptools.find_packages(where="src"),
-    python_requires=">=3.9, <3.10",
+    packages=setuptools.find_packages(),
     install_requires=[
         'numpy~=1.22.3',
         'matplotlib~=3.5.1',

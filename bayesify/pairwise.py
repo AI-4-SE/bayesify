@@ -1020,6 +1020,7 @@ class PWRegressor(BaseEstimator, RegressorMixin):
             saver = DummySaver()
         else:
             saver = CompressedSaverHelper(out_dir, dpi=150, fig_pre='')
+        self.out_dir = out_dir
         time_str = get_time_str()
         session_dir_name = "-".join([time_str])
         saver.set_session_dir(session_dir_name)
