@@ -1,8 +1,8 @@
 # import networkx as nx
-import argparse
 import copy
 import datetime
 import itertools
+import string
 import time
 from math import sqrt
 import os
@@ -16,10 +16,10 @@ import numpy as np
 import pandas as pd
 from scipy.stats import gamma
 import seaborn as sns
-from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.base import BaseEstimator, RegressorMixin, TransformerMixin
 
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import Lasso, LassoCV
+from sklearn.linear_model import LassoCV
 from sklearn.linear_model import LinearRegression, ElasticNetCV, LassoLars
 from sklearn.linear_model import Ridge, RidgeCV
 from sklearn.preprocessing import PolynomialFeatures
@@ -34,239 +34,133 @@ from sklearn.pipeline import make_pipeline
 import bz2
 import pickle
 import sys
-import gc
 
 from xml.etree import ElementTree as ET
 
-import torch
-import torch.distributions.constraints as constraints
 import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS, Predictive
 import numpyro
 import jax.numpy as jnp
 import jax
-from jax import random, vmap
+from jax import random
 from pprint import pprint, pformat
-
+from sklearn.pipeline import make_pipeline
 from bayesify.datahandler import DistBasedRepo
+from itertools import product, islice
 
 
-def str2bool(v):
-    if isinstance(v, bool):
-        return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
+def all_words():
+    alphabet = string.ascii_lowercase
+    l = 1
+    while True:
+        for alph_tuple in product(alphabet, repeat=l):
+            new_string = "".join(alph_tuple)
+            yield new_string
+        l += 1
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--sys-dir",
-                        help="specifies the parent folder for all config sys",
-                        type=str, required=False, default="/application/Distance-Based_Data/SupplementaryWebsite/",
-                        )
-    parser.add_argument("--sys-name",
-                        help="name of the conf sys",
-                        type=str
-                        )
-    parser.add_argument("--attribute",
-                        help="specifies the attribute name within the system config xml",
-                        type=str, default=None,
-                        )
-    parser.add_argument("--train-size",
-                        help="size of train set either relative 0-1 or absolute when >1",
-                        type=int,
-                        )
-    parser.add_argument("--mcmc-tune",
-                        help="tune steps if mcmc is used as method",
-                        type=int, default=1000,
-                        )
-    parser.add_argument("--mcmc-cores",
-                        help="number of cores to use if mcmc is used as method",
-                        type=int, default=3,
-                        )
-    parser.add_argument("--mcmc-samples",
-                        help="mcmc sampling steps if mcmc is used as method",
-                        type=int, default=1000,
-                        )
-    parser.add_argument("--folder",
-                        help="parent folder for results", required=False,
-                        type=str, default="/results/last-inference/",
-                        )
-    parser.add_argument("--active-sampler",
-                        help="git dir for activesampler",
-                        type=str, default=None,
-                        )
-    parser.add_argument("--t",
-                        help="used pre-difined sampling set for t-wise samples",
-                        type=int, default=None
-                        )
-    parser.add_argument("--inters-between-influential-and-all-fts",
-                        help="generates interation pairs not only for all influential features, but also ",
-                        type=int, default=None
-                        )
-    parser.add_argument("--rnd",
-                        help="random seed",
-                        type=int,
-                        )
-    parser.add_argument("--no-plots",
-                        help="prevents storage of plots",
-                        action='store_true'
-                        )
-    parser.add_argument("--relative-error",
-                        help="models relative aleatoric errors",
-                        type=str2bool, default=False, const=True, nargs='?',
-                        )
-    parser.add_argument("--absolute-error",
-                        help="models absolute aleatoric errors",
-                        type=str2bool, default=True, const=True, nargs='?',
-                        )
-
-    ###############################
-
-    args = parser.parse_args()
-
-    attribute = args.attribute
-    sys_name = args.sys_name
-    sys_dir = args.sys_dir
-    train_size = args.train_size
-    t_wise = args.t
-    assert train_size or t_wise and not (train_size and t_wise), "chose either train_size or t"
-    rnd_seed = args.rnd
-    mcmc_tune = args.mcmc_tune
-    mcmc_cores = args.mcmc_cores
-    numpyro.set_host_device_count(mcmc_cores)
-    n_cores_available = jax.device_count()
-    print(f"{n_cores_available} cores available with {mcmc_cores} configured cores.")
-    mcmc_samples = args.mcmc_samples
-    no_plots = args.no_plots
-    relative_error = args.relative_error
-    absolute_error = args.absolute_error
-    folder = args.folder
-    saver = CompressedSaverHelper(folder, dpi=150, fig_pre='')
-    time_str = get_time_str()
-    session_dir_name = "-".join([time_str, sys_name, attribute])
-    saver.set_session_dir(session_dir_name)
-    meta_dict = vars(args)
-    meta_dict["system"] = platform.uname()
-    saver.store_dict(meta_dict, "args")
-    np.random.seed(rnd_seed)
-    cfg_sys = DistBasedRepo(sys_dir, sys_name, attribute=attribute)
-    pos_map = dict(cfg_sys.position_map)
-    ft_names_ordered = np.array(list(pos_map.keys()))[np.argsort(list(pos_map.values()))]
-    configs = pd.DataFrame(list(cfg_sys.all_configs.keys()), columns=ft_names_ordered)
-    config_attrs = pd.DataFrame(list(cfg_sys.all_configs.values()), columns=['<y>'])
-    pos_map = {ft: idx for idx, ft in enumerate(list(configs.columns))}
-    df_configs = pd.concat([configs, config_attrs], axis=1)
-    all_xs = np.array(df_configs.iloc[:, :-1])
-    all_ys = list(df_configs.iloc[:, -1])
-
-    if t_wise:
-        train_x, train_y, eval_x, eval_y = cfg_sys.get_train_eval_split(t_wise)
-    else:
-        n_train = float(train_size) if train_size < 1 else int(train_size)
-        train_x, eval_test_x, train_y, eval_test_y = train_test_split(all_xs, all_ys, train_size=n_train)
-        eval_x, test_x, eval_y, test_y = train_test_split(eval_test_x, eval_test_y, train_size=0.7)
-
-    feature_names = list(pos_map)
-    ', '.join(feature_names)
-    print_baseline_perf(train_x, train_y, eval_x, eval_y)
-
-    start_experiment_time = time.time()
-
-    internal_method = "mcmc"
-    tracer = LassoTracer(saver, conf_sys=cfg_sys, inters_only_between_influentials=True, no_plots=no_plots,
-                         relative_obs_noise=relative_error, absolute_obs_noise=absolute_error, t_wise=t_wise,
-                         rnd_seed=rnd_seed)
-    tracer.fit(train_x, train_y, feature_names=feature_names, pos_map=pos_map, attribute=attribute, mcmc_tune=mcmc_tune,
-               mcmc_cores=mcmc_cores, mcmc_samples=mcmc_samples)
-    end_time = time.time()
-    diff = end_time - start_experiment_time
-    print(f'Finished within {int(diff // 60)}m{int(diff % 60)}s')
-
-    sys.stdout.flush()
-    print("Storing Tracer Object")
-    del tracer.X
-    del tracer.y
-
-    # this stores the trained model
-    saver.store_pickle(tracer, "tracer")
+def get_n_words(n_options):
+    return list(islice(all_words(), n_options))
 
 
-def set_zero_to_min(arr):
-    np_arr = np.array(arr)
-    mask = np_arr != 0.0
-    non_zero_min = min(np_arr[mask])
-    r = []
-    for value in arr:
-        if value == 0.0:
-            r.append(non_zero_min)
-        else:
-            r.append(value)
-    return r
-
-
-def update_fig_ax_titles(fig, ft_names_and_root):
-    for ax, new_title in zip(fig.axes, ft_names_and_root):
-        ax.set_title(new_title)
-
-
-class Tracer(BaseEstimator, RegressorMixin):
-    def __init__(self, saver, conf_sys=None, x_eval=None, y_eval=None, inters_only_between_influentials=True,
-                 no_plots=False, snapshot_err_scores=False, prior_broaden_factor=1, absolute_obs_noise=True,
-                 relative_obs_noise=False, t_wise=None, rnd_seed=0):
-
-        self.t_wise = t_wise
-        self.prior_spectrum_cost = None
-        self.prior_broaden_factor = prior_broaden_factor
-        self.final_var_names = None
-        self.absolute_obs_noise = absolute_obs_noise
-        self.relative_obs_noise = relative_obs_noise
-        self.saver = saver
-        self.prediction_sample_size = 1000
-        self.no_plots = no_plots
-        self.X = None
-        self.y = None
-        self.train_data = None
-        self.feature_names = None
+class P4Preprocessing(TransformerMixin, BaseEstimator):
+    def __init__(
+        self,
+        inters_only_between_influentials=True,
+        prior_broaden_factor=1,
+        t_wise=None,
+        rnd_seed=0,
+        verbose=False,
+    ):
         self.pos_map = None
-        self.best_front = None
-        self.top_candidate_lr = None
-        self.top_candidate = None
-        self.final_model = None
-        self.final_trace = None
-        self.rnd_seed = rnd_seed
-        self.MAP = None
-        self.x_eval = x_eval
-        self.y_eval = y_eval
-        self.x_shared = None
-        self.y_shared = None
-        self.styles = ('-', '--', '-.', ':')
-        self.history = {}
-        self.models = {}
-        self.fitting_times = {}
-        self.total_experiment_time = None
-        self.weighted_errs_per_sample = None
-        self.weighted_rel_errs_per_sample = None
-        self.snapshot_err_scores = snapshot_err_scores
+        self.cost_ft_selection = None
+        self.final_var_names = None
+        self.interactions_possible = None
+        self.feature_names = None
         self.inters_only_between_influentials = inters_only_between_influentials
+        self.prior_broaden_factor = prior_broaden_factor
+        self.t_wise = t_wise
+        self.rnd_seed = rnd_seed
+        self.verbose = verbose
 
-        print("Using absolute measurement error: {} | relative measurement error: {}".format(absolute_obs_noise,
-                                                                                             relative_obs_noise))
+    def fit(self, X, y, model_interactions=True, feature_names=None, pos_map=None):
+        n_options = len(X[0])
+        if feature_names:
+            self.feature_names = feature_names
+            self.pos_map = None
+        elif pos_map:
+            self.pos_map = pos_map
+            self.feature_names = list(pos_map)
+        else:
+            self.feature_names = get_n_words(n_options)
+            self.pos_map = {opt: idx for idx, opt in enumerate(self.feature_names)}
+        if model_interactions:
+            if self.t_wise:
+                self.interactions_possible = self.t_wise > 1
+                self.print("Interactions possible because t =", self.t_wise)
+            else:
+                self.interactions_possible = n_options < len(X)
+        else:
+            self.interactions_possible = False
 
-    def set_eval_values(self):
-        self.x_shared.set_value(self.x_eval)
-        self.y_shared.set_value(self.y_eval)
+        start_ft_selection = time.time()
+        self.print("Starting feature and interaction selection.")
+        self.final_var_names, _, _ = self.get_influentials_from_lasso(X, y)
+        assert self.final_var_names, (
+            "Lasso feature selection selected no options of interactions. "
+            "Hence, we cannot learn any influence!"
+        )
+        self.cost_ft_selection = time.time() - start_ft_selection
+        self.print(
+            "Feature selection with lasso took {}s".format(self.cost_ft_selection)
+        )
+
+        return self
+
+    def transform(self, X):
+        rv_names, X = self.get_p4_train_data(X)
+        return X
+
+    def fit_transform(self, X, y=None, *fit_args, **fit_params):
+        if y is None:
+            print("Need y to do preprocessing! Returning untouched X.")
+            return X
+        fitted_preproc = self.fit(X, y, *fit_args, **fit_params)
+        transformed_X = fitted_preproc.transform(X)
+        return transformed_X
+        #
+        # if y is not None:
+        #     return X, y
+        # else:
+        #     return X
+
+    def transform_data_to_candidate_features(self, candidate, train_x):
+        mapped_features = []
+        for term in candidate:
+            idx = [self.pos_map[ft] for ft in term]
+            selected_cols = np.array(train_x)[:, idx]
+            if len(idx) > 1:
+                mapped_feature = np.product(selected_cols, axis=1).ravel()
+            else:
+                mapped_feature = selected_cols.ravel()
+            mapped_features.append(list(mapped_feature))
+        reshaped_mapped_x = np.atleast_2d(mapped_features).T
+        return reshaped_mapped_x
+
+    def print(self, *args, **kwargs):
+        if self.verbose:
+            print(*args, **kwargs)
 
     def generate_valid_combinations(self, first_stage_influential_ft, all_ft):
         print_flush("Generating Interaction Terms")
         if self.inters_only_between_influentials:
-            all_inter_pairs = list(itertools.combinations(first_stage_influential_ft, 2))
+            all_inter_pairs = list(
+                itertools.combinations(first_stage_influential_ft, 2)
+            )
         else:
-            all_inter_pairs = list(itertools.product(first_stage_influential_ft, all_ft))
+            all_inter_pairs = list(
+                itertools.product(first_stage_influential_ft, all_ft)
+            )
         valid_pairs = []
         print("Computing x values for", len(all_inter_pairs), "interactions")
         sys.stdout.flush()
@@ -300,7 +194,11 @@ class Tracer(BaseEstimator, RegressorMixin):
 
             if duplicates_any_features:
                 duplicates_any_features = np.any(
-                    [np.all(vals_prod == small_train_set[:, i]) for i in range(small_train_set.shape[1])])
+                    [
+                        np.all(vals_prod == small_train_set[:, i])
+                        for i in range(small_train_set.shape[1])
+                    ]
+                )
 
             if not is_non_constant:
                 is_non_constant = len(np.unique(vals_prod)) > 1
@@ -320,30 +218,20 @@ class Tracer(BaseEstimator, RegressorMixin):
         joint_prod = np.concatenate(products)
         return joint_prod
 
-    def get_ft_and_inters_from_rvs(self, inter_trace, noise_str, p_mass, ft_inter_names):
-        significant_inter_ft = self.get_significant_fts(inter_trace, noise_str, p_mass, ft_inter_names)
-        ft_or_inter = [a.replace("influence_", "").split("&") for a in significant_inter_ft if "root" not in a]
+    def get_ft_and_inters_from_rvs(
+        self, inter_trace, noise_str, p_mass, ft_inter_names
+    ):
+        significant_inter_ft = self.get_significant_fts(
+            inter_trace, noise_str, p_mass, ft_inter_names
+        )
+        ft_or_inter = [
+            a.replace("influence_", "").split("&")
+            for a in significant_inter_ft
+            if "root" not in a
+        ]
         final_ft = [ft[0] for ft in ft_or_inter if len(ft) == 1]
         final_inter = [ft for ft in ft_or_inter if len(ft) > 1]
         return final_ft, final_inter
-
-    def construct_snapshot(self, influential_ft_list, influential_inter_list, model, reg_fts, trace, stage_name):
-        reg_dict_final, err_dict = self.get_reg_dict(reg_fts)
-        err_dict = {lr: remove_raw_field(errs) for lr, errs in err_dict.items()}
-        self.trace_plots(model, trace, pre=stage_name, model_dict=reg_dict_final, ft_names=reg_fts)
-        if self.snapshot_err_scores:
-            print("Snapshotting Error Scores")
-            y_pred = self.predict(self.X, model=model, trace=trace)
-            inter_errors = get_err_dict_from_predictions(y_pred, self.X, self.y)
-
-            inter_errors = remove_raw_field(inter_errors)
-        else:
-            print("Skipping Error Scores")
-            inter_errors = {}
-        trace_errs = {}
-        snapshot = get_snapshot_dict(reg_dict_final, err_dict, inter_errors, reg_fts, model,
-                                     influential_ft_list + influential_inter_list, trace, trace_errs)
-        return snapshot
 
     def get_priors_from_lin_reg(self, rv_names, sd_scale=None):
         if sd_scale is None:
@@ -353,8 +241,10 @@ class Tracer(BaseEstimator, RegressorMixin):
         if not self.no_plots:
             self.save_spectrum_fig(reg_dict_final, err_dict, rv_names)
 
-        all_raw_errs = [errs['raw'] for errs in list(err_dict.values())]
-        all_abs_errs = np.array([abs(err['y_pred'] - err['y_true']) for err in all_raw_errs])
+        all_raw_errs = [errs["raw"] for errs in list(err_dict.values())]
+        all_abs_errs = np.array(
+            [abs(err["y_pred"] - err["y_true"]) for err in all_raw_errs]
+        )
 
         noise_sd_over_all_regs = sd_scale * 2 * float(all_abs_errs.mean())
         reg_list = list(reg_dict_final.values())
@@ -362,47 +252,25 @@ class Tracer(BaseEstimator, RegressorMixin):
         betas = []
         for coef_id, _ in enumerate(reg_list[0].coef_):
             coef_candidates = np.array([reg.coef_[coef_id] for reg in reg_list])
-            alpha, beta = norm.fit(coef_candidates, )
+            alpha, beta = norm.fit(
+                coef_candidates,
+            )
             alpha = max(coef_candidates)
             alphas.append(alpha)
             betas.append(beta)
         prior_coef_means = np.array(alphas)
         prior_coef_stdvs = np.array(betas)
-        prior_root_mean, prior_root_std = norm.fit(np.array([reg.intercept_ for reg in reg_list]), )
+        prior_root_mean, prior_root_std = norm.fit(
+            np.array([reg.intercept_ for reg in reg_list]),
+        )
 
-        return noise_sd_over_all_regs, prior_coef_means, prior_coef_stdvs, prior_root_mean, prior_root_std
-
-    def get_prior_weighted_normal(self, rv_names, gamma=1, stddev_multiplier=1):
-        if stddev_multiplier is None:
-            stddev_multiplier = self.prior_broaden_factor
-        print("Getting priors from lin regs.")
-        reg_dict_final, err_dict = self.get_regression_spectrum(rv_names)
-        if not self.no_plots:
-            self.save_spectrum_fig(reg_dict_final, err_dict, rv_names)
-        all_raw_errs = [errs['raw'] for errs in list(err_dict.values())]
-        all_abs_errs = np.array([abs(err['y_pred'] - err['y_true']) for err in all_raw_errs])
-        mean_abs_errs = all_abs_errs.mean(axis=1)
-        all_rel_errs = np.array([abs((err['y_pred'] - err['y_true']) / err['y_true']) for err in all_raw_errs])
-        mean_rel_errs = all_rel_errs.mean(axis=1)
-        reg_list = list(reg_dict_final.values())
-
-        means_weighted = []
-        stds_weighted = []
-        weights = 1 - MinMaxScaler().fit_transform(np.atleast_2d(mean_abs_errs).T).ravel()
-        err_mean, err_std = weighted_avg_and_std(mean_abs_errs, weights, gamma=gamma)
-        noise_sd_over_all_regs = err_mean + 3 * err_std
-        root_candidates = np.array([reg.intercept_ for reg in reg_list])
-        root_mean, root_std = weighted_avg_and_std(root_candidates, weights, gamma=gamma)
-        for coef_id, coef in enumerate(rv_names):
-            coef_candidates = np.array([reg.coef_[coef_id] for reg in reg_list])
-            mean_weighted, std_weighted = weighted_avg_and_std(coef_candidates, weights, gamma=gamma)
-            means_weighted.append(mean_weighted)
-            stds_weighted.append(stddev_multiplier * std_weighted)
-
-        weighted_errs_per_sample = np.average(all_abs_errs, axis=0, weights=mean_abs_errs)
-        weighted_rel_errs_per_sample = np.average(all_rel_errs, axis=0, weights=mean_rel_errs)
-        return np.array(means_weighted), np.array(stds_weighted), root_mean, root_std, \
-               err_mean, err_std, weighted_errs_per_sample, weighted_rel_errs_per_sample
+        return (
+            noise_sd_over_all_regs,
+            prior_coef_means,
+            prior_coef_stdvs,
+            prior_root_mean,
+            prior_root_std,
+        )
 
     def get_priors_from_train_set(self, rv_names, sd_scale, n_influentials=10):
         mean_perf = np.mean(self.y)
@@ -417,8 +285,8 @@ class Tracer(BaseEstimator, RegressorMixin):
 
         return noise_sd, mean_priors, std_priors, root_mean_prior, root_std_prior
 
-    def get_uninformed_priors_from_train_set(self, rv_names):
-        mean_perf = np.mean(self.y)
+    def get_uninformed_priors_from_train_set(self, y, rv_names):
+        mean_perf = y
         expected_ft_mean = 0
         expected_std = mean_perf * 10
         mean_priors = np.array([expected_ft_mean] * len(rv_names))
@@ -430,44 +298,17 @@ class Tracer(BaseEstimator, RegressorMixin):
 
         return noise_sd, mean_priors, std_priors, root_mean_prior, root_std_prior
 
-    def get_reg_dict(self, lin_reg_features):
-        ridge, err_lr = self.fit_and_eval_lin_reg(lin_reg_features, RidgeCV(cv=3))
-        lasso, err_lasso = self.fit_and_eval_lin_reg(lin_reg_features, reg_proto=LassoCV(cv=3))
-        net, err_net = self.fit_and_eval_lin_reg(lin_reg_features, reg_proto=ElasticNetCV(cv=3))
-        reg_dict = {"ridge": ridge, "lasso": lasso, "elastic net": net}
-        err_dict = {"ridge": err_lr, "lasso": err_lasso, "elastic net": err_net}
-        return reg_dict, err_dict
-
-    def get_regression_spectrum(self, lin_reg_features, n_steps=50, cv=3, n_jobs=-1):
-        start = time.time()
-        regs = []
-        step_list = np.linspace(0, 1, n_steps)
-        for l1_ratio in step_list:
-            if 0 < l1_ratio < 1:
-                reg_prototype = ElasticNetCV(l1_ratio=l1_ratio, cv=cv, n_jobs=n_jobs)
-                reg, err = self.fit_and_eval_lin_reg(lin_reg_features, reg_proto=reg_prototype, verbose=False)
-                regs.append((reg, err))
-        ridge = RidgeCV(cv=cv)
-        lasso = LassoCV(cv=cv, n_jobs=n_jobs)
-        for reg in [ridge, lasso]:
-            fitted_reg, err = self.fit_and_eval_lin_reg(lin_reg_features, reg_proto=reg, verbose=False)
-            regs.append((fitted_reg, err))
-
-        reg_dict = {l1_ratio: tup[0] for tup, l1_ratio in zip(regs, step_list)}
-        err_dict = {l1_ratio: tup[1] for tup, l1_ratio in zip(regs, step_list)}
-
-        end = time.time()
-        cost = end - start
-        self.prior_spectrum_cost = cost
-        print("Prior Spectrum Computation took", cost)
-
-        return reg_dict, err_dict
-
     def get_significant_fts(self, lin_trace, noise_str, p_mass, ft_inter_names):
         significant_ft = []
         for ft in lin_trace.varnames:
-            if "_log__" not in ft and "relative_error" not in ft and noise_str not in ft \
-                    and "root" not in ft and "active_" not in ft and "_scale" not in ft:
+            if (
+                "_log__" not in ft
+                and "relative_error" not in ft
+                and noise_str not in ft
+                and "root" not in ft
+                and "active_" not in ft
+                and "_scale" not in ft
+            ):
                 if lin_trace[ft].shape[1] == 1:
                     mass_less_zero = (lin_trace[ft] > 0).mean()
                     if mass_less_zero > p_mass or mass_less_zero < (1 - p_mass):
@@ -477,50 +318,27 @@ class Tracer(BaseEstimator, RegressorMixin):
                 else:
                     # single variabel with shape for all ft_inter_names
                     masses_less_zero = (lin_trace[ft] > 0).mean(axis=0)
-                    relevant_mask = np.any([masses_less_zero > p_mass, masses_less_zero < (1 - p_mass)], axis=0)
+                    relevant_mask = np.any(
+                        [masses_less_zero > p_mass, masses_less_zero < (1 - p_mass)],
+                        axis=0,
+                    )
                     rel_idx = np.nonzero(relevant_mask)
                     significant_ft = np.array(ft_inter_names)[rel_idx]
         return significant_ft
 
-    def predict(self, x, model=None, trace=None):
-        prediction_samples = self.predict_raw(x, model=model, trace=trace, )
-        predictions = np.median(prediction_samples, axis=0)
-        return predictions
-
-    def predict_raw(self, x, model=None, trace=None, sample_size=None):
-        if not model:
-            model = self.final_model
-            trace = self.final_trace
-        sample_size = self.prediction_sample_size if sample_size is None else sample_size
-        # self.x_shared.set_value(np.array(x))
-        transformed_x = self.get_pm_train_data(np.array(x))[1]
-        self.train_data.set_value(transformed_x)
-
-        with model:
-            ppc = pm.sample_posterior_predictive(trace, samples=sample_size)
-        prediction_samples = list(ppc.values())[0]
-        return prediction_samples
-
-    def score_uncert(self, x_eval, y_eval, model=None, trace=None):
-        y_trace = self.predict_raw(x_eval, model, trace)
-        r_dict = {"y_true": y_eval, "trace_pred": y_trace}
-        for conf_prob in (0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99):
-            in_range_ratio = self.calc_confidence_err(conf_prob, y_eval, y_trace)
-            print("correct ratio within {}% certainty band: {}%".format(int(conf_prob * 100), in_range_ratio * 100))
-            r_dict[conf_prob] = in_range_ratio
-        return r_dict
-
     @staticmethod
     def calc_confidence_err(conf_prob, y_eval, y_trace):
-        y_conf = stats.hpd(y_trace, credible_interval=conf_prob)
+        y_conf = az.hdi(y_trace, credible_interval=conf_prob)
 
-        pred_in_conf_rande_arr = [y_low < true_y < y_up for true_y, (y_low, y_up) in zip(y_eval, y_conf)]
+        pred_in_conf_rande_arr = [
+            y_low < true_y < y_up for true_y, (y_low, y_up) in zip(y_eval, y_conf)
+        ]
         in_range_ratio = np.array(pred_in_conf_rande_arr).mean()
         return in_range_ratio
 
     @staticmethod
     def calc_confidence_closest_mape(conf_prob, y_eval, y_trace):
-        y_conf = stats.hpd(y_trace, credible_interval=conf_prob)
+        y_conf = az.hdi(y_trace, credible_interval=conf_prob)
         closest_mape = []
         for true_y, (y_low, y_up) in zip(y_eval, y_conf):
             if y_low <= true_y <= y_up:
@@ -535,79 +353,6 @@ class Tracer(BaseEstimator, RegressorMixin):
         closest_mape = float(np.array(np_mapes).mean())
         closest_mape_if_outside = float(np_mapes[np.nonzero(np_mapes)].mean())
         return closest_mape, closest_mape_if_outside
-
-    def trace_plots(self, model, trace, pre='', model_dict=None, store_trace=False, ft_names=None):
-        if not self.no_plots:
-            data = az.from_numpyro(model.mcmc,
-                                   coords={"ft_names": ft_names},
-                                   dims={"coefs": ["ft_names"], },
-                                   )
-            az.plot_trace(data, compact=False)
-            plt.tight_layout()
-            time_template = "%Y-%m-%d_%H%M%S-{}".format(pre)
-            file = datetime.datetime.now().strftime(time_template)
-            self.saver.store_figure('trace-{}'.format(file))
-
-            #
-            # n_bins = 100
-            # print("Starting plotting")
-            # time_template = "%Y-%m-%d_%H%M%S-{}".format(pre)
-            # file = datetime.datetime.now().strftime(time_template)
-            # ft_names_and_root = ["root"] + ft_names
-            # if model_dict is not None:
-            #     print("Storing lr comp plot.")
-            #     reference_val_dict = self.map_lr_coeffs_to_trace_vars(ft_names_and_root, model_dict)
-            #     pm.plot_posterior(trace, point_estimate='mode', ref_val=None, varnames=["root", "influence"],
-            #                       bins=n_bins)
-            #     fig = plt.gcf()
-            #     update_fig_ax_titles(fig, ft_names_and_root)
-            #     self.add_ref_vals_to_fig(fig, reference_val_dict)
-            #     self.saver.store_figure('lr-comp-{}'.format(file))
-            #
-            # if store_trace:
-            #     print("Storing trace plot.")
-            #     az.plot_trace(trace, max_plots=20)
-            #     fig = plt.gcf()
-            #     update_fig_ax_titles(fig, ft_names_and_root)
-            #     plt.tight_layout()
-            #     self.saver.store_figure('trace-{}'.format(pre))
-            #
-            # print("Storing posterior plot with ref=0.")
-            # pm.plot_posterior(trace, point_estimate='mode', ref_val=0, bins=n_bins)
-            # fig = plt.gcf()
-            # update_fig_ax_titles(fig, ft_names_and_root)
-            # self.saver.store_figure('posterior-{}'.format(file))
-            #
-            # print("Storing energy plot.")
-            # pm.energyplot(trace)
-            # self.saver.store_figure('energy-{}'.format(file))
-            # print("Finished plotting")
-
-    def map_lr_coeffs_to_trace_vars(self, ft_names, lr, label=None):
-        if type(lr) is dict:
-            return_dict = {}
-            for l, model in lr.items():
-                new_coeffs = self.map_lr_coeffs_to_trace_vars(ft_names, model, l)
-                return_dict = {**return_dict, **new_coeffs}
-        else:
-            reference_vals = []
-            coeffs = lr.coef_
-            root = lr.intercept_
-            coef_idx = 0
-            filtered_var_names = []
-            for v in ft_names:
-                if v == "root":
-                    coef = root
-                    filtered_var_names.append(v)
-                else:
-                    coef = coeffs[coef_idx]
-                    coef_idx += 1
-                    filtered_var_names.append(v)
-
-                if coef is not None:
-                    reference_vals.append(coef)
-            return_dict = {label: reference_vals}
-        return return_dict
 
     def predict_2(self, X):
         X_ = self.transform_data_to_candidate_features(self.top_candidate, X)
@@ -630,81 +375,19 @@ class Tracer(BaseEstimator, RegressorMixin):
     def fit_and_eval_lin_reg(self, lin_reg_features, reg_proto=None, verbose=True):
         if not reg_proto:
             reg_proto = Ridge()
-        inters = [get_feature_names_from_rv_id(ft_inter_Str) for ft_inter_Str in lin_reg_features]
+        inters = [
+            get_feature_names_from_rv_id(ft_inter_Str)
+            for ft_inter_Str in lin_reg_features
+        ]
         x_mapped = self.transform_data_to_candidate_features(inters, self.X)
         lr = copy.deepcopy(reg_proto)
         lr.fit(x_mapped, self.y)
         if verbose:
-            print_scores("analogue LR", lr, 'train set', x_mapped, self.y)
+            print_scores("analogue LR", lr, "train set", x_mapped, self.y)
         errs = get_err_dict(lr, x_mapped, self.y)
         return lr, errs
 
-    def fit_and_eval_non_param_reg(self, reg_proto, id_str):
-        model = copy.deepcopy(reg_proto)
-        model.fit(self.X, self.y)
-        print_scores(id_str, model, 'train set', self.X, self.y)
-        errs = get_err_dict(model, self.X, self.y)
-        return model, errs
-
-    def add_ref_vals_to_fig(self, fig, reference_vals: dict):
-        axs = fig.axes
-        colors = sns.color_palette("colorblind", len(reference_vals))
-        num_vars = len(list(reference_vals.values())[0])
-
-        for n, (label, reference) in enumerate(reference_vals.items()):
-            style = self.get_line_style(n, colors=colors)
-            for i, ax in zip(range(num_vars), axs):
-                ref_val = reference[i]
-                if ref_val is not None:
-                    ax.axvline(x=ref_val, **style, label=label)
-        axs[1].legend()
-
-    def get_line_style(self, i, colors):
-        color_id = i % len(colors)
-        color = colors[color_id]
-        dash_style_idx = i % len(self.styles)
-        dash_style = self.styles[dash_style_idx]
-        style = {
-            "linestyle": dash_style,
-            "c": color,
-            "linewidth": 2}
-        return style
-
-    def explain(self):
-        return self.history
-
-    def fit_pm_model(self, mcmc_cores, mcmc_samples, mcmc_tune, rv_names,
-                     train_data, observed_y):
-        prior_coef_means, prior_coef_stdvs, prior_root_mean, \
-        prior_root_std, err_mean, err_std, self.weighted_errs_per_sample, self.weighted_rel_errs_per_sample = self.get_prior_weighted_normal(
-            rv_names, gamma=3)
-        gamma_prior = gamma.fit(self.weighted_errs_per_sample, )
-        gamma_shape, gamma_loc, gamma_scale = gamma_prior
-        gamma_k = gamma_shape
-        gamma_theta = gamma_scale
-        gamma_alpha = gamma_k
-        gamma_beta = 1 / gamma_theta
-        # rel_err = jnp.mean(self.weighted_rel_errs_per_sample)
-        pyro_reg = PyroMCMCRegressor(mcmc_samples, mcmc_tune, mcmc_cores, prior_root_mean, prior_root_std,
-                                     prior_coef_means, prior_coef_stdvs, gamma_alpha, gamma_beta)
-        start = time.time()
-        # storing_start = time.time()
-        # print("Storing Prior Model pickle")
-        # self.saver.store_pickle(pyro_model, "prior-model")
-        # print("Successfully stored Prior Model pickle")
-        # storing_cost = time.time() - storing_start
-        storing_cost = 0
-        pyro_reg.fit(train_data, observed_y, self.rnd_seed)
-        self.samples = pyro_reg.samples
-        end = time.time()
-        print_flush("Done Fitting. Calulating time.")
-        total_cost = (end - start) - storing_cost
-        print_flush("Fitted model in {0:9.1} minutes.".format((total_cost) / 60))
-        return pyro_reg, self.samples
-
-    def get_pm_train_data(self, x=None):
-        if x is None:
-            x = self.x_shared
+    def get_p4_train_data(self, X=None):
         vars_and_biases = self.final_var_names
         rv_names = []
         inter_strs = []
@@ -713,7 +396,7 @@ class Tracer(BaseEstimator, RegressorMixin):
             if len(var) == 1:
                 var_name = var[0]
                 idx_ft = self.pos_map[var_name]
-                vals_ft_np = x[:, idx_ft]
+                vals_ft_np = X[:, idx_ft]
                 columns.append(vals_ft_np)
                 rv_names.append(var_name)
                 inter_str = "influence_{}".format(var_name)
@@ -723,8 +406,8 @@ class Tracer(BaseEstimator, RegressorMixin):
                 idx_a = self.pos_map[a]
                 idx_b = self.pos_map[b]
                 inter_combi_str = "{}&{}".format(a, b)
-                vals_a_np = x[:, idx_a]
-                vals_b_np = x[:, idx_b]
+                vals_a_np = X[:, idx_a]
+                vals_b_np = X[:, idx_b]
                 vals_prod = self.vector_inner_prod_slow(vals_a_np, vals_b_np)
 
                 columns.append(vals_prod)
@@ -737,112 +420,138 @@ class Tracer(BaseEstimator, RegressorMixin):
     def save_spectrum_fig(self, reg_dict_final, err_dict, rv_names):
         iteration_id = iteration_id = hash(tuple(rv_names))
         print("saving spectrum")
-        err_tuples = [(i, errs['r2'], errs['mape'], errs['rmse']) for i, errs in enumerate(list(err_dict.values()))]
-        df_errors = pd.DataFrame(err_tuples, columns=["i", 'r2', 'mape', 'rmse'])
-        df_melted_errs = pd.melt(df_errors, id_vars=['i'], value_vars=['r2', 'mape', 'rmse'],
-                                 var_name='error type', value_name='model error')
+        err_tuples = [
+            (i, errs["r2"], errs["mape"], errs["rmse"])
+            for i, errs in enumerate(list(err_dict.values()))
+        ]
+        df_errors = pd.DataFrame(err_tuples, columns=["i", "r2", "mape", "rmse"])
+        df_melted_errs = pd.melt(
+            df_errors,
+            id_vars=["i"],
+            value_vars=["r2", "mape", "rmse"],
+            var_name="error type",
+            value_name="model error",
+        )
         g = sns.FacetGrid(df_melted_errs, col="error type", sharex=False, sharey=False)
         g = g.map(plt.hist, "model error")
         spectrum_id = "spect-{}".format(iteration_id)
         err_id = "{}-errs".format(spectrum_id)
         self.saver.store_figure(err_id)
-        coef_list = [(i, reg.intercept_, *list(reg.coef_)) for i, reg in enumerate(reg_dict_final.values())]
-        coef_cols = ['root', *rv_names]
-        df_coefs = pd.DataFrame(coef_list, columns=['i', *coef_cols])
-        df_melted_coefs = pd.melt(df_coefs, id_vars=['i'], value_vars=coef_cols,
-                                  var_name='feature', value_name='value')
-        g = sns.FacetGrid(df_melted_coefs, col="feature", sharex=False, sharey=False, col_wrap=4)
+        coef_list = [
+            (i, reg.intercept_, *list(reg.coef_))
+            for i, reg in enumerate(reg_dict_final.values())
+        ]
+        coef_cols = ["root", *rv_names]
+        df_coefs = pd.DataFrame(coef_list, columns=["i", *coef_cols])
+        df_melted_coefs = pd.melt(
+            df_coefs,
+            id_vars=["i"],
+            value_vars=coef_cols,
+            var_name="feature",
+            value_name="value",
+        )
+        g = sns.FacetGrid(
+            df_melted_coefs, col="feature", sharex=False, sharey=False, col_wrap=4
+        )
 
         g = g.map(sns.histplot, "value")
         coef_id = "{}-coefs".format(spectrum_id)
         self.saver.store_figure(coef_id)
         pass
 
+    # def fit(
+    #     self,
+    #     X,
+    #     y,
+    #     feature_names=None,
+    #     pos_map=None,
+    #     attribute="unknown-attrib",
+    #     mcmc_tune=2000,
+    #     mcmc_cores=3,
+    #     mcmc_samples=1000,
+    #     model_interactions=True,
+    # ):
+    #     fit_start = time.time()
+    #     self.X = np.array(X)
+    #     self.y = np.array(y)
+    #     if feature_names:
+    #         self.feature_names = feature_names
+    #     if pos_map:
+    #         self.pos_map = pos_map
+    #     else:
+    #         self.pos_map = {opt: idx for idx, opt in enumerate(feature_names)}
+    #
+    #     if model_interactions:
+    #         if self.t_wise:
+    #             self.interactions_possible = self.t_wise > 1
+    #             print("Interactions possible because t =", self.t_wise)
+    #         else:
+    #             self.interactions_possible = len(self.X[0]) < len(self.X)
+    #         noise_str = "noise"
+    #     else:
+    #         self.interactions_possible = False
+    #
+    #     self.x_shared = np.array(self.X)
+    #
+    #     start_ft_selection = time.time()
+    #     print("Starting feature and interaction selection.")
+    #     self.final_var_names, lars_pipe, pruned_x = self.get_influentials_from_lasso()
+    #     assert (
+    #         self.final_var_names
+    #     ), "Lasso feature selection selected no options of interactions. Hence, P4 cannot learn any influence!"
+    #     self.cost_ft_selection = time.time() - start_ft_selection
+    #     print("Feature selection with lasso took {}s".format(self.cost_ft_selection))
+    #     stage_name_lasso = "it-lasso"
+    #     print_flush("Starting {}".format(stage_name_lasso))
+    #     lasso_start = time.time()
+    #     lasso_model, lasso_reg_features, lasso_trace = self.get_and_fit_model_biased(
+    #         mcmc_cores, mcmc_samples, mcmc_tune
+    #     )
+    #
+    #     lasso_end = time.time()
+    #     self.fitting_times[stage_name_lasso] = lasso_end - lasso_start
+    #     stage_2_influential_fts = [f for f in self.final_var_names if len(f) == 1]
+    #     stage_2_influential_inters = [f for f in self.final_var_names if len(f) > 1]
+    #     # stage_2_influential_fts, stage_2_influential_inters = self.get_ft_and_inters_from_rvs(lasso_trace, noise_str,
+    #     #                                                                                       p_mass,
+    #     #                                                                                       lasso_reg_features)
+    #     print("Starting snapshot")
+    #     snapshot = self.construct_snapshot(
+    #         stage_2_influential_fts,
+    #         stage_2_influential_inters,
+    #         lasso_model,
+    #         lasso_reg_features,
+    #         lasso_trace,
+    #         stage_name=stage_name_lasso,
+    #     )
+    #     self.history[stage_name_lasso] = snapshot
+    #     model_trace_dict = get_model_trace_dict(lasso_trace, lasso_model)
+    #     self.models["it-final"] = model_trace_dict
+    #     print_flush("Finished snapshot")
+    #     self.final_model = lasso_model
+    #     self.final_trace = lasso_trace
+    #     print("linked trace to Tracer object")
+    #     fit_end = time.time()
+    #     self.total_experiment_time = fit_end - fit_start
 
-class LassoTracer(Tracer):
-    def __init__(self, *args, feature_names=None, pos_map=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        if feature_names:
-            self.feature_names = feature_names
-        if pos_map:
-            self.pos_map = pos_map
+    def predict_raw_keep_trace_samples(
+        self, x, model=None, trace=None, n_post_samples=None
+    ):
 
-    def fit(self, X, y, feature_names=None, pos_map=None, attribute='unknown-attrib', mcmc_tune=2000, mcmc_cores=3,
-            mcmc_samples=1000, model_interactions=True):
-        fit_start = time.time()
-        self.X = np.array(X)
-        self.y = np.array(y)
-        if feature_names:
-            self.feature_names = feature_names
-        if pos_map:
-            self.pos_map = pos_map
-        else:
-            self.pos_map = {opt: idx for idx, opt in enumerate(feature_names)}
-
-        if model_interactions:
-            if self.t_wise:
-                self.interactions_possible = self.t_wise > 1
-                print("Interactions possible because t =", self.t_wise)
-            else:
-                self.interactions_possible = len(self.X[0]) < len(self.X)
-            noise_str = 'noise'
-        else:
-            self.interactions_possible = False
-
-        self.x_shared = np.array(self.X)
-
-        start_ft_selection = time.time()
-        print("Starting feature and interaction selection.")
-        self.final_var_names, lars_pipe, pruned_x = self.get_influentials_from_lasso()
-        assert self.final_var_names, "Lasso feature selection selected no options of interactions. Hence, P4 cannot learn any influence!"
-        self.cost_ft_selection = time.time() - start_ft_selection
-        print("Feature selection with lasso took {}s".format(self.cost_ft_selection))
-        stage_name_lasso = "it-lasso"
-        print_flush("Starting {}".format(stage_name_lasso))
-        lasso_start = time.time()
-        lasso_model, lasso_reg_features, lasso_trace = \
-            self.get_and_fit_model_biased(mcmc_cores, mcmc_samples,
-                                          mcmc_tune)
-
-        lasso_end = time.time()
-        self.fitting_times[stage_name_lasso] = lasso_end - lasso_start
-        stage_2_influential_fts = [f for f in self.final_var_names if len(f) == 1]
-        stage_2_influential_inters = [f for f in self.final_var_names if len(f) > 1]
-        # stage_2_influential_fts, stage_2_influential_inters = self.get_ft_and_inters_from_rvs(lasso_trace, noise_str,
-        #                                                                                       p_mass,
-        #                                                                                       lasso_reg_features)
-        print("Starting snapshot")
-        snapshot = self.construct_snapshot(stage_2_influential_fts, stage_2_influential_inters, lasso_model,
-                                           lasso_reg_features, lasso_trace,
-                                           stage_name=stage_name_lasso)
-        self.history[stage_name_lasso] = snapshot
-        model_trace_dict = get_model_trace_dict(lasso_trace, lasso_model)
-        self.models["it-final"] = model_trace_dict
-        print_flush("Finished snapshot")
-        self.final_model = lasso_model
-        self.final_trace = lasso_trace
-        print("linked trace to Tracer object")
-        fit_end = time.time()
-        self.total_experiment_time = fit_end - fit_start
-
-    def predict_raw_keep_trace_samples(self, x, model=None, trace=None, n_post_samples=None):
-        if not model:
-            model = self.final_model
-            trace = self.final_trace
-        model.predict(x)
-        # self.x_shared.set_value(np.array(x))
-        transformed_x = self.get_pm_train_data(np.array(x))[1]
-
-        ppc = pm.sample_posterior_predictive(trace[1000:], model=self.final_model, samples=2000)
-        prediction_samples = list(ppc.values())[0]
+        transformed_x = self.get_p4_train_data(np.array(x))[1]
         return prediction_samples
 
-    def get_influentials_from_lasso(self, degree=2):
-        train_x_2d = np.atleast_2d(self.X)
-        train_y = self.y
-        lars = LassoCV(cv=3, positive=False, )  # .fit(train_x_2d, train_y)
+    def get_influentials_from_lasso(self, X, y, degree=2):
+        train_x_2d = np.atleast_2d(X)
+        train_y = y
+        lars = LassoCV(
+            cv=3,
+            positive=False,
+        )  # .fit(train_x_2d, train_y)
         if self.interactions_possible:
-            poly_mapping = PolynomialFeatures(degree, interaction_only=True, include_bias=False)
+            poly_mapping = PolynomialFeatures(
+                degree, interaction_only=True, include_bias=False
+            )
             lars_pipe = make_pipeline(poly_mapping, lars)
         else:
             lars_pipe = lars
@@ -851,9 +560,11 @@ class LassoTracer(Tracer):
         if self.interactions_possible:
             transformed_x = poly_mapping.transform(train_x_2d)
             if self.feature_names is not None:
-                ft_inters = poly_mapping.get_feature_names(input_features=self.feature_names)
+                ft_inters = poly_mapping.get_feature_names_out(
+                    input_features=self.feature_names
+                )
             else:
-                ft_inters = poly_mapping.get_feature_names()
+                ft_inters = poly_mapping.get_feature_names_out()
         else:
             transformed_x = train_x_2d
             ft_inters = self.feature_names
@@ -867,29 +578,19 @@ class LassoTracer(Tracer):
                 ft_inters_and_influences[tuple(ft_inter.split())] = c
         pruned_x = transformed_x[:, inf_idx]
 
-        ft_inters_and_influences = {tuple(ft_inter.split()): c for c, ft_inter in zip(coefs, ft_inters) if c != 0.0}
+        ft_inters_and_influences = {
+            tuple(ft_inter.split()): c
+            for c, ft_inter in zip(coefs, ft_inters)
+            if c != 0.0
+        }
         return ft_inters_and_influences, lars_pipe, pruned_x
-
-    def get_and_fit_model_biased(self, mcmc_cores, mcmc_samples, mcmc_tune):
-        print_flush("Generating interactions.")
-        start = time.time()
-        rv_names, train_data = self.get_pm_train_data()
-        end = time.time()
-        print()
-        print("Finished generating interactions in {0:9.1} minutes.".format((end - start) / 60))
-        print()
-        sys.stdout.flush()
-
-        pyro_model, new_trace = self.fit_pm_model(mcmc_cores, mcmc_samples, mcmc_tune,
-                                                  rv_names, train_data, self.y)
-        return pyro_model, rv_names, new_trace
 
 
 def get_feature_names_from_rv_id(ft_inter):
-    new_ft_inter = ft_inter.replace("_log__", '')
-    new_ft_inter = new_ft_inter.replace("active_", '')
-    new_ft_inter = new_ft_inter.replace("_scale", '')
-    new_ft_inter = new_ft_inter.replace("influence_", '')
+    new_ft_inter = ft_inter.replace("_log__", "")
+    new_ft_inter = new_ft_inter.replace("active_", "")
+    new_ft_inter = new_ft_inter.replace("_scale", "")
+    new_ft_inter = new_ft_inter.replace("influence_", "")
     result = new_ft_inter.split("&")
     return result
 
@@ -899,18 +600,23 @@ def print_baseline_perf(train_x, train_y, eval_x, eval_y):
     rf = RandomForestRegressor(n_estimators=10, n_jobs=1).fit(train_x_2d, train_y)
     lr = LinearRegression(n_jobs=1).fit(train_x_2d, train_y)
     ridge = Ridge(alpha=1.0, fit_intercept=True).fit(train_x_2d, train_y)
-    lars = LassoLars(alpha=.1, positive=False, fit_path=True).fit(train_x_2d, train_y)
+    lars = LassoLars(alpha=0.1, positive=False, fit_path=True).fit(train_x_2d, train_y)
 
-    for name, reg in [('lr', lr), ('rf', rf), ('ridge', ridge), ('lars', lars), ]:
-        print('\t__ {} __'.format((name)))
-        print_scores(name, reg, 'train', train_x, train_y)
-        print_scores(name, reg, 'eval', eval_x, eval_y)
-        print('')
+    for name, reg in [
+        ("lr", lr),
+        ("rf", rf),
+        ("ridge", ridge),
+        ("lars", lars),
+    ]:
+        print("\t__ {} __".format((name)))
+        print_scores(name, reg, "train", train_x, train_y)
+        print_scores(name, reg, "eval", eval_x, eval_y)
+        print("")
 
-    print('lr intercept: {}'.format(lr.intercept_))
-    print('lr coefs: {}'.format(lr.coef_))
-    print('ridge intercept: {}'.format(ridge.intercept_))
-    print('ridge coefs: {}'.format(ridge.coef_))
+    print("lr intercept: {}".format(lr.intercept_))
+    print("lr coefs: {}".format(lr.coef_))
+    print("ridge intercept: {}".format(ridge.intercept_))
+    print("ridge coefs: {}".format(ridge.coef_))
 
 
 def get_random_seed():
@@ -922,7 +628,9 @@ def print_scores(model_name, reg, sample_set_id, xs, ys, print_raw=False):
     for score_id, score in errors.items():
         if not print_raw and "raw" in score_id:
             continue
-        print('{} {} set {} score: {}'.format(model_name, sample_set_id, score_id, score))
+        print(
+            "{} {} set {} score: {}".format(model_name, sample_set_id, score_id, score)
+        )
     print()
 
 
@@ -936,8 +644,12 @@ def get_err_dict_from_predictions(y_pred, xs, ys):
     mape = score_mape(None, xs, ys, y_pred)
     rmse = score_rmse(None, xs, ys, y_pred)
     r2 = r2_score(ys, y_pred)
-    errors = {"r2": r2, "mape": mape, "rmse": rmse,
-              "raw": {"x": xs, "y_pred": y_pred, "y_true": ys}}
+    errors = {
+        "r2": r2,
+        "mape": mape,
+        "rmse": rmse,
+        "raw": {"x": xs, "y_pred": y_pred, "y_true": ys},
+    }
     return errors
 
 
@@ -955,7 +667,16 @@ def score_mape(reg, xs, y_true, y_predicted=None):
     return mape
 
 
-def get_snapshot_dict(lr_reg_dict, err_dict, errors, lin_reg_features, linear_model, significant_ft, trace, trace_errs):
+def get_snapshot_dict(
+    lr_reg_dict,
+    err_dict,
+    errors,
+    lin_reg_features,
+    linear_model,
+    significant_ft,
+    trace,
+    trace_errs,
+):
     snapshot = {
         "used-features": lin_reg_features,
         "significant-ft": significant_ft,
@@ -1007,84 +728,308 @@ def iter_all_strings():
             yield "".join(s)
 
 
-class PWRegressor(BaseEstimator, RegressorMixin):
-    def __init__(self, out_dir: str = None):
-        """
-        Constructor for a P4Regressor.
-
-        Parameters
-        ----------
-        out_dir :  path specifying where to store trained pairwise model
-        """
-        if not out_dir:
-            saver = DummySaver()
-        else:
-            saver = CompressedSaverHelper(out_dir, dpi=150, fig_pre='')
-        self.out_dir = out_dir
-        time_str = get_time_str()
-        session_dir_name = "-".join([time_str])
-        saver.set_session_dir(session_dir_name)
-        self.lasso_tracer = LassoTracer(saver, inters_only_between_influentials=True, no_plots=True,
-                                        relative_obs_noise=True, absolute_obs_noise=False)
+class PyroMCMCRegressor:
+    def __init__(
+        self,
+        mcmc_samples: int = 1000,
+        mcmc_tune=1000,
+        n_chains=1,
+    ):
+        self.error_prior = None
+        self.infl_prior = None
+        self.base_prior = None
         self.coef_ = None
-        self.coef_samples_ = None
-        self.pos_map = None
+        self.samples = None
+        # self.grammar = grammar
+        self.mcmc_samples = mcmc_samples
+        self.mcmc_tune = mcmc_tune
+        self.n_chains = n_chains
+        self.mcmc = None
 
-    def fit(self, X, y, feature_names: list = None, pos_map: dict = None, mcmc_cores: int = 3, mcmc_samples: int = 1000,
-            mcmc_tune: int = 500, model_interactions=True):
-        """
+    def model(
+        self,
+        data,
+        y=None,
+        base_prior=None,
+        infl_prior=None,
+        error_prior=None,
+    ):
+        base_prior = self.base_prior if base_prior is None else base_prior
+        self.base_prior = base_prior
+        infl_prior = self.infl_prior if infl_prior is None else infl_prior
+        self.infl_prior = infl_prior
+        error_prior = self.error_prior if error_prior is None else error_prior
+        self.error_prior = error_prior
+        if y is not None:
+            y = jnp.array(y)
+        data = jnp.array(data)
+        base = numpyro.sample(
+            "base",
+            # dist.Normal(0, 1)  # dist.Normal(self.prior_root_mean, self.prior_root_std)
+            base_prior
+            # "base",
+            # base_prior,
+        )
+        rnd_influences = numpyro.sample(
+            "coefs",
+            infl_prior
+            # dist.Normal(jnp.zeros(data.shape[1]), jnp.ones(data.shape[1]))
+            # dist.Normal(
+            #     self.prior_coef_means,
+            #     self.prior_coef_stdvs,
+            # ),
+        )
+        mat_infl = rnd_influences.reshape(-1, 1)
+        product = jnp.matmul(data, mat_infl).reshape(-1)
+        result = product + base
+        error_var = numpyro.sample(
+            # "error", dist.Gamma(self.gamma_alpha, self.gamma_beta)
+            "error",
+            # dist.Exponential(1)
+            error_prior,
+        )
+        with numpyro.plate("data_vectorized", len(result)):
+            obs = numpyro.sample("measurements", dist.Normal(result, error_var), obs=y)
+        return obs
 
-        Parameters
-        ----------
+    def fit(
+        self,
+        X,
+        y,
+        random_key=0,
+        verbose=False,
+        feature_names=None,
+        pos_map=None,
+        mcmc_tune=None,
+        mcmc_cores=None,
+        mcmc_samples=None,
+    ):
+        self.rv_names = (
+            get_n_words(X.shape[1]) if feature_names is None else feature_names
+        )
 
-        X : training data
-        y : training labels
-        feature_names : list of names for the feaures, which are represented as columns in X - give either feature_names or pos_map
-        pos_map : map with indexes as keys and feature names as values, e.g. {0:"optA", 1:"optB"}. Will be generated is used internally to label generated interactions - give either feature_names or pos_map
-        mcmc_cores : Number of traces to compute in parallel during MCMC
-        mcmc_samples : Number of effective samples to return for each random varible, i.e., for each feature influence
-        mcmc_tune : Number of tuning samples that are discarded before conducting mcmc_samples samples
-        model_interactions : Learns pairwise interactions between influential options, and only option-wise influences
-        """
-        if pos_map:
-            feature_names = list(pos_map)
-        elif feature_names:
-            pos_map = {opt: idx for idx, opt in enumerate(feature_names)}
-        else:
-            pos_map = {opt: idx for idx, opt in zip(range(X.shape[1]), iter_all_strings())}
-            feature_names = list(pos_map)
+        (
+            coef_prior,
+            base_prior,
+            error_prior,
+            self.weighted_errs_per_sample,
+            self.weighted_rel_errs_per_sample,
+        ) = self.get_prior_weighted_normal(X, y, self.rv_names, gamma=3)
 
-        self.pos_map = pos_map
-        self.lasso_tracer.fit(X, y, feature_names=feature_names, pos_map=pos_map, mcmc_tune=mcmc_tune,
-                              mcmc_cores=mcmc_cores, mcmc_samples=mcmc_samples, model_interactions=model_interactions)
+        rng_key = random.PRNGKey(random_key)
+        nuts_kernel = NUTS(self.model, adapt_step_size=True)
+        n_samples = mcmc_samples if mcmc_samples else self.mcmc_samples
+        n_tune = mcmc_tune if mcmc_tune else self.mcmc_tune
+        n_chains = mcmc_cores if mcmc_cores else self.n_chains
+        mcmc = MCMC(
+            nuts_kernel,
+            num_samples=n_samples,
+            num_warmup=n_tune,
+            num_chains=n_chains,
+        )
+        mcmc.run(
+            rng_key,
+            X,
+            y,
+            base_prior=base_prior,
+            infl_prior=coef_prior,
+            error_prior=error_prior,
+        )
+        self.samples = mcmc.get_samples()
+        if verbose:
+            pprint(self.samples)
+            mcmc.print_summary()
+        self.mcmc = mcmc
         self.update_coefs()
 
     def update_coefs(self):
         """
         Uses the current inferred trace to compute self.coef_ and self.coef_samples_
         """
-        tracer = self.lasso_tracer
-        trace = tracer.final_trace
-        root_samples = np.array(trace["base"])
-        influence_samples = np.array(trace["coefs"])
-        influence_dict = {varname: np.array(influence_samples[:, i]) for i, varname in
-                          enumerate(self.lasso_tracer.final_var_names)}
-        relative_error_samples = np.array(trace["error"])
+        root_samples = np.array(self.samples["base"])
+        influence_samples = np.array(self.samples["coefs"])
+        influence_dict = {
+            varname: np.array(influence_samples[:, i])
+            for i, varname in enumerate(self.rv_names)
+        }
+        relative_error_samples = np.array(self.samples["base"])
         self.coef_samples_ = {
             "root": root_samples,
             "influences": influence_dict,
-            "relative_error": relative_error_samples
+            "relative_error": relative_error_samples,
         }
         root_mode = float(np.mean(az.hdi(root_samples, hdi_prob=0.01)))
-        influence_modes = list(np.mean(az.hdi(influence_samples, hdi_prob=0.01), axis=1))
-        influence_modes_dict = {varname: mode for mode, varname in
-                                zip(influence_modes, self.lasso_tracer.final_var_names)}
+        influence_modes = list(
+            np.mean(az.hdi(influence_samples, hdi_prob=0.01), axis=1)
+        )
+        influence_modes_dict = {
+            varname: mode for mode, varname in zip(influence_modes, self.rv_names)
+        }
         rel_error_mode = float(np.mean(az.hdi(relative_error_samples, hdi_prob=0.01)))
         self.coef_ = {
             "root": root_mode,
             "influences": influence_modes_dict,
-            "relative_error": rel_error_mode
+            "relative_error": rel_error_mode,
         }
+
+    def get_prior_weighted_normal(self, X, y, rv_names, gamma=1, stddev_multiplier=3):
+        print("Getting priors from lin regs.")
+        reg_dict_final, err_dict = self.get_regression_spectrum(X, y, rv_names)
+        all_raw_errs = [errs["raw"] for errs in list(err_dict.values())]
+        all_abs_errs = np.array(
+            [abs(err["y_pred"] - err["y_true"]) for err in all_raw_errs]
+        )
+        mean_abs_errs = all_abs_errs.mean(axis=1)
+        all_rel_errs = np.array(
+            [
+                abs((err["y_pred"] - err["y_true"]) / err["y_true"])
+                for err in all_raw_errs
+            ]
+        )
+        mean_rel_errs = all_rel_errs.mean(axis=1)
+        reg_list = list(reg_dict_final.values())
+
+        means_weighted = []
+        stds_weighted = []
+        weights = (
+            1 - MinMaxScaler().fit_transform(np.atleast_2d(mean_abs_errs).T).ravel()
+        )
+        err_mean, err_std = weighted_avg_and_std(mean_abs_errs, weights, gamma=gamma)
+        noise_sd_over_all_regs = err_mean + 3 * err_std
+        root_candidates = np.array([reg.intercept_ for reg in reg_list])
+        root_mean, root_std = weighted_avg_and_std(
+            root_candidates, weights, gamma=gamma
+        )
+        for coef_id, coef in enumerate(rv_names):
+            coef_candidates = np.array([reg.coef_[coef_id] for reg in reg_list])
+            mean_weighted, std_weighted = weighted_avg_and_std(
+                coef_candidates, weights, gamma=gamma
+            )
+            means_weighted.append(mean_weighted)
+            stds_weighted.append(stddev_multiplier * std_weighted)
+
+        weighted_errs_per_sample = np.average(
+            all_abs_errs, axis=0, weights=mean_abs_errs
+        )
+        weighted_rel_errs_per_sample = np.average(
+            all_rel_errs, axis=0, weights=mean_rel_errs
+        )
+
+        base_prior = dist.Normal(jnp.array(root_mean), jnp.array(root_std))
+        error_prior = dist.Exponential(jnp.array(err_mean))
+        coef_prior = dist.Normal(
+            jnp.array(means_weighted),
+            jnp.array(stds_weighted),
+        )
+
+        return (
+            coef_prior,
+            base_prior,
+            error_prior,
+            weighted_errs_per_sample,
+            weighted_rel_errs_per_sample,
+        )
+
+    def get_regression_spectrum(
+        self, X, y, lin_reg_features, n_steps=50, cv=3, n_jobs=-1
+    ):
+        start = time.time()
+        regs = []
+        step_list = np.linspace(0, 1, n_steps)
+        for l1_ratio in step_list:
+            if 0 < l1_ratio < 1:
+                reg_prototype = ElasticNetCV(l1_ratio=l1_ratio, cv=cv, n_jobs=n_jobs)
+                reg, err = self.fit_and_eval_lin_reg(
+                    X, y, lin_reg_features, reg_proto=reg_prototype, verbose=False
+                )
+                regs.append((reg, err))
+        ridge = RidgeCV(cv=cv)
+        lasso = LassoCV(cv=cv, n_jobs=n_jobs)
+        for reg in [ridge, lasso]:
+            fitted_reg, err = self.fit_and_eval_lin_reg(
+                X, y, lin_reg_features, reg_proto=reg, verbose=False
+            )
+            regs.append((fitted_reg, err))
+
+        reg_dict = {l1_ratio: tup[0] for tup, l1_ratio in zip(regs, step_list)}
+        err_dict = {l1_ratio: tup[1] for tup, l1_ratio in zip(regs, step_list)}
+
+        end = time.time()
+        cost = end - start
+        self.prior_spectrum_cost = cost
+        print("Prior Spectrum Computation took", cost)
+
+        return reg_dict, err_dict
+
+    def fit_and_eval_lin_reg(
+        self, X, y, lin_reg_features, reg_proto=None, verbose=True
+    ):
+        if not reg_proto:
+            reg_proto = Ridge()
+        inters = [
+            get_feature_names_from_rv_id(ft_inter_Str)
+            for ft_inter_Str in lin_reg_features
+        ]
+        x_mapped = X  # self.transform_data_to_candidate_features(inters, X)
+        lr = copy.deepcopy(reg_proto)
+        lr.fit(x_mapped, y)
+        if verbose:
+            print_scores("analogue LR", lr, "train set", x_mapped, y)
+        errs = get_err_dict(lr, x_mapped, y)
+        return lr, errs
+
+    def get_tuples(self, feature_names):
+        tuples = []
+        tuples.extend(
+            [("mcmc", "base", float(val)) for val in self.samples["base"].numpy()]
+        )
+        for n, rv_name in enumerate(feature_names):
+            rv_samples = self.samples["coefs"][:, n]
+            tuples.extend([("mcmc", rv_name, float(val)) for val in rv_samples.numpy()])
+        return tuples
+
+    def coef_ci(self, ci: float):
+        pass
+
+    def _predict_samples(self, X, n_samples: int = None, rnd_key=0):
+        # Predictive(model_fast, guide=guide, num_samples=100,
+        # return_sites=("measurements",))
+        n = n_samples if n_samples else self.samples
+        prngkey = random.PRNGKey(rnd_key)
+        pred = Predictive(self.model, num_samples=n)
+        posterior_samples = pred(prngkey, X, None)
+        y_pred = posterior_samples["measurements"]
+        return y_pred
+
+    def predict(self, X, n_samples: int = None, ci: float = None):
+        """
+        Performs a prediction conforming to the sklearn interface.
+
+        Parameters
+        ----------
+        X : Array-like data
+        n_samples : number of posterior predictive samples to return for each prediction
+        ci : value between 0 and 1 representing the desired confidence of returned confidence intervals. E.g., ci= 0.8 will generate 80%-confidence intervals
+
+        Returns
+        -------
+         - a scalar if only x is specified
+         - a set of posterior predictive samples of size n_samples if is given and n_samples > 0
+         - a set of pairs, representing lower and upper bounds of confidence intervals for each prediction if ci is given
+
+        """
+        if not n_samples:
+            n_samples = 500
+            y_samples = self._predict_samples(X, n_samples=n_samples)
+            y_pred = np.mean(az.hdi(y_samples, hdi_prob=0.01), axis=1)
+        else:
+            y_samples = self._predict_samples(X, n_samples=n_samples)
+            if ci:
+                assert_ci(ci)
+                y_pred = az.hdi(y_samples, hdi_prob=ci)
+            else:
+                y_pred = y_samples
+        return y_pred
 
     def coef_ci(self, ci: float):
         """
@@ -1109,106 +1054,117 @@ class PWRegressor(BaseEstimator, RegressorMixin):
                 coef_cis[key] = az.hdi(val, hdi_prob=ci)
         return coef_cis
 
-    def predict(self, X, n_samples: int = None, ci: float = None):
-        """
-        Performs a prediction conforming to the sklearn interface.
+    def fit_pm_model(
+        self, mcmc_cores, mcmc_samples, mcmc_tune, rv_names, train_data, observed_y
+    ):
+        (
+            prior_coef_means,
+            prior_coef_stdvs,
+            prior_root_mean,
+            prior_root_std,
+            err_mean,
+            err_std,
+            self.weighted_errs_per_sample,
+            self.weighted_rel_errs_per_sample,
+        ) = self.get_prior_weighted_normal(rv_names, gamma=3)
+        gamma_prior = gamma.fit(
+            self.weighted_errs_per_sample,
+        )
+        gamma_shape, gamma_loc, gamma_scale = gamma_prior
+        gamma_k = gamma_shape
+        gamma_theta = gamma_scale
+        gamma_alpha = gamma_k
+        gamma_beta = 1 / gamma_theta
+        # rel_err = jnp.mean(self.weighted_rel_errs_per_sample)
+        pyro_reg = PyroMCMCRegressor(
+            mcmc_samples,
+            mcmc_tune,
+            mcmc_cores,
+            prior_root_mean,
+            prior_root_std,
+            prior_coef_means,
+            prior_coef_stdvs,
+            gamma_alpha,
+            gamma_beta,
+        )
+        start = time.time()
+        # storing_start = time.time()
+        # print("Storing Prior Model pickle")
+        # self.saver.store_pickle(pyro_model, "prior-model")
+        # print("Successfully stored Prior Model pickle")
+        # storing_cost = time.time() - storing_start
+        storing_cost = 0
+        pyro_reg.fit(train_data, observed_y, self.rnd_seed)
+        self.samples = pyro_reg.samples
+        end = time.time()
+        print_flush("Done Fitting. Calulating time.")
+        total_cost = (end - start) - storing_cost
+        print_flush("Fitted model in {0:9.1} minutes.".format((total_cost) / 60))
+        return pyro_reg, self.samples
 
-        Parameters
-        ----------
-        X : Array-like data
-        n_samples : number of posterior predictive samples to return for each prediction
-        ci : value between 0 and 1 representing the desired confidence of returned confidence intervals. E.g., ci= 0.8 will generate 80%-confidence intervals
 
-        Returns
-        -------
-         - a scalar if only x is specified
-         - a set of posterior predictive samples of size n_samples if is given and n_samples > 0
-         - a set of pairs, representing lower and upper bounds of confidence intervals for each prediction if ci is given
-
-        """
-        tracer = self.lasso_tracer
-        if not n_samples:
-            n_samples = 500
-            y_samples = tracer.predict_raw_keep_trace_samples(X, n_post_samples=n_samples)
-            y_pred = np.mean(az.hdi(y_samples, hdi_prob=0.01), axis=1)
-        else:
-            y_samples = tracer.predict_raw_keep_trace_samples(X, n_post_samples=n_samples)
-            if ci:
-                assert_ci(ci)
-                y_pred = az.hdi(y_samples, hdi_prob=ci)
-            else:
-                y_pred = y_samples
-        return y_pred
-
-
-class PyroMCMCRegressor:
-    def __init__(self, mcmc_samples: int, mcmc_tune, n_chains, prior_root_mean, prior_root_std,
-                 prior_coef_means, prior_coef_stdvs, gamma_alpha, gamma_beta):
-        self.coef_ = None
-        self.samples = None
-        # self.grammar = grammar
-        self.mcmc_samples = mcmc_samples
-        self.mcmc_tune = mcmc_tune
-        self.n_chains = n_chains
-        self.prior_root_mean = prior_root_mean
-        self.prior_root_std = prior_root_std
-        self.prior_coef_means = prior_coef_means if torch.is_tensor(prior_coef_means) else torch.from_numpy(
-            prior_coef_means)
-        self.prior_coef_stdvs = prior_coef_stdvs if torch.is_tensor(prior_coef_stdvs) else torch.from_numpy(
-            prior_coef_stdvs)
-        self.gamma_alpha = gamma_alpha
-        self.gamma_beta = gamma_beta
-        self.mcmc = None
-
-    def model(self, data, y=None):
-        if y is not None:
-            y = y.numpy() if torch.is_tensor(y) else np.array(y)
-        data = data.numpy() if torch.is_tensor(data) else np.array(data)
-        # num_opts = data.shape[1]
-        # with numpyro.plate("coefs_vectorized", self.prior_coef_stdvs.shape[0]):
-        base = numpyro.sample("base", dist.Normal(self.prior_root_mean, self.prior_root_std))
-        rnd_influences = numpyro.sample("coefs",
-                                        dist.Normal(self.prior_coef_means.numpy(), self.prior_coef_stdvs.numpy(), ))
-        mat_infl = rnd_influences.reshape(-1, 1)
-        product = jnp.matmul(data, mat_infl).reshape(-1)
-        result = product + base
-        error_var = numpyro.sample("error", dist.Gamma(self.gamma_alpha, self.gamma_beta))
-        # abs_err = jnp.abs(result * error_var)
-        with numpyro.plate("data_vectorized", len(result)):
-            obs = numpyro.sample("measurements", dist.Normal(result, error_var), obs=y)
-        return obs
-
-    def fit(self, X, y, random_key=0):
-        rng_key = random.PRNGKey(random_key)
-        rng_key, rng_key_ = random.split(rng_key)
-        # self.conditionable_model(X,y)
-        nuts_kernel = NUTS(self.model, adapt_step_size=True)
-        mcmc = MCMC(nuts_kernel, num_samples=self.mcmc_samples,
-                    num_warmup=self.mcmc_tune, num_chains=self.n_chains)
-        mcmc.run(rng_key, X, y)
-        self.samples = mcmc.get_samples()
-        pprint(self.samples)
-        mcmc.print_summary()
-        self.mcmc = mcmc
-
-    def get_tuples(self, feature_names):
-        tuples = []
-        # what is about the attribute noise for mcmc
-        tuples.extend([("mcmc", "base", float(val)) for val in self.samples["base"].numpy()])
-        for n, rv_name in enumerate(feature_names):
-            rv_samples = self.samples["coefs"][:, n]
-            tuples.extend([("mcmc", rv_name, float(val)) for val in rv_samples.numpy()])
-        return tuples
-
-    def coef_ci(self, ci: float):
-        pass
-
-    def predict(self, X, n_samples: int = None, ci: float = None):
-        # Predictive(model_fast, guide=guide, num_samples=100,
-        # return_sites=("measurements",))
-        pred = Predictive(self.model, self.samples)
-        y_pred = pred(X, None)["measurements"]
-        return y_pred
+# class PWRegressor(BaseEstimator, RegressorMixin):
+#     def __init__(
+#         self,
+#     ):
+#         """
+#         Constructor for an Uncertainty-Aware Regressor.
+#         """
+#         self.coef_ = None
+#         self.coef_samples_ = None
+#         self.pos_map = None
+#         self.reg = None
+#
+#     def fit(
+#         self,
+#         X,
+#         y,
+#         feature_names: list = None,
+#         pos_map: dict = None,
+#         mcmc_cores: int = 3,
+#         mcmc_samples: int = 1000,
+#         mcmc_tune: int = 500,
+#     ):
+#         """
+#
+#         Parameters
+#         ----------
+#
+#         X : training data
+#         y : training labels
+#         feature_names : list of names for the feaures, which are represented as columns in X - give either feature_names or pos_map
+#         pos_map : map with indexes as keys and feature names as values, e.g. {0:"optA", 1:"optB"}. Will be generated is used internally to label generated interactions - give either feature_names or pos_map
+#         mcmc_cores : Number of traces to compute in parallel during MCMC
+#         mcmc_samples : Number of effective samples to return for each random varible, i.e., for each feature influence
+#         mcmc_tune : Number of tuning samples that are discarded before conducting mcmc_samples samples
+#         """
+#         if pos_map:
+#             feature_names = list(pos_map)
+#         elif feature_names:
+#             pos_map = {opt: idx for idx, opt in enumerate(feature_names)}
+#         else:
+#             pos_map = {
+#                 opt: idx for idx, opt in zip(range(X.shape[1]), iter_all_strings())
+#             }
+#             feature_names = list(pos_map)
+#
+#         self.pos_map = pos_map
+#         self.final_var_names = list(self.pos_map.keys())
+#         self.reg = PyroMCMCRegressor(
+#             mcmc_samples=mcmc_samples, mcmc_tune=mcmc_tune, n_chains=mcmc_cores
+#         )
+#         self.reg.fit(
+#             X,
+#             y,
+#             feature_names=feature_names,
+#             pos_map=pos_map,
+#             mcmc_tune=mcmc_tune,
+#             mcmc_cores=mcmc_cores,
+#             mcmc_samples=mcmc_samples,
+#         )
+#
+#     def predict(self, *args, **kwargs):
+#         return self.reg.predict(*args, **kwargs)
 
 
 def assert_ci(ci):
@@ -1227,46 +1183,46 @@ class SaverHelper:
         f_name_clean = f_name.replace(" ", "")
         return f_name_clean
 
-    def store_xml(self, xml_root, f_name, folder='.'):
+    def store_xml(self, xml_root, f_name, folder="."):
         f_name_clean = self.get_clean_file_name(f_name)
         current_folder = self.safe_folder_join(self.get_cwd(), folder)
-        file_xml = os.path.join(current_folder, 'run-conf-{}.xml'.format(f_name_clean))
+        file_xml = os.path.join(current_folder, "run-conf-{}.xml".format(f_name_clean))
         # xml_string = pprint.pformat(xml_root)
         xml_string = ET.tostring(xml_root).decode("utf-8")
-        xml_string = '\n'.join([x for x in xml_string.split("\n") if x.strip() != ''])
+        xml_string = "\n".join([x for x in xml_string.split("\n") if x.strip() != ""])
 
-        with open(file_xml, 'w') as f:
+        with open(file_xml, "w") as f:
             f.write(xml_string)
         abs_path = os.path.abspath(file_xml)
         return abs_path
 
-    def store_dict(self, r_dict, f_name, folder='.'):
+    def store_dict(self, r_dict, f_name, folder="."):
         f_name_clean = self.get_clean_file_name(f_name)
         current_folder = self.safe_folder_join(self.get_cwd(), folder)
-        file_pickle = os.path.join(current_folder, 'results-{}.p'.format(f_name_clean))
-        file_txt = os.path.join(current_folder, 'results-{}.txt'.format(f_name_clean))
-        with open(file_pickle, 'wb') as f:
+        file_pickle = os.path.join(current_folder, "results-{}.p".format(f_name_clean))
+        file_txt = os.path.join(current_folder, "results-{}.txt".format(f_name_clean))
+        with open(file_pickle, "wb") as f:
             pickle.dump(r_dict, f)
         dict_string = pformat(r_dict)
-        with open(file_txt, 'w') as f:
+        with open(file_txt, "w") as f:
             f.write(dict_string)
         abs_path = os.path.abspath(file_pickle)
         return abs_path
 
-    def store_pickle(self, obj, f_name, folder='.'):
+    def store_pickle(self, obj, f_name, folder="."):
         f_name_clean = self.get_clean_file_name(f_name)
         current_folder = self.safe_folder_join(self.get_cwd(), folder)
-        file_pickle = os.path.join(current_folder, 'results-{}.p'.format(f_name_clean))
-        with open(file_pickle, 'wb') as f:
+        file_pickle = os.path.join(current_folder, "results-{}.p".format(f_name_clean))
+        with open(file_pickle, "wb") as f:
             pickle.dump(obj, f)
         abs_path = os.path.abspath(file_pickle)
         return abs_path
 
-    def store_figure(self, f_name_clean, folder='.'):
+    def store_figure(self, f_name_clean, folder="."):
         f_name_clean = self.get_clean_file_name(f_name_clean)
         current_folder = self.safe_folder_join(self.get_cwd(), folder)
-        for extension in ('pdf', 'png'):
-            f_name_final = '{}-{}.{}'.format(self.fig_pre, f_name_clean, extension)
+        for extension in ("pdf", "png"):
+            f_name_final = "{}-{}.{}".format(self.fig_pre, f_name_clean, extension)
             f_path = os.path.join(current_folder, f_name_final)
 
             plt.savefig(f_path, dpi=self.dpi)
@@ -1287,57 +1243,7 @@ class SaverHelper:
 
 def get_time_str(i=None):
     i = datetime.datetime.now() if i is None else datetime.datetime.fromtimestamp(i)
-    time_str = '-'.join((str(intt) for intt in [i.year, i.month, i.day, i.hour, i.minute, i.second]))
+    time_str = "-".join(
+        (str(intt) for intt in [i.year, i.month, i.day, i.hour, i.minute, i.second])
+    )
     return time_str
-
-
-class DummySaver(SaverHelper):
-    def __init__(self):
-        pass
-
-    def get_clean_file_name(f_name):
-        f_name_clean = f_name.replace(" ", "")
-        return f_name_clean
-
-    def store_xml(self, xml_root, f_name, folder='.'):
-        pass
-
-    def store_dict(self, r_dict, f_name, folder='.'):
-        pass
-
-    def store_pickle(self, obj, f_name, folder='.'):
-        pass
-
-    def store_figure(self, f_name_clean, folder='.'):
-        pass
-
-    def set_session_dir(self, name):
-        self.session_dir = name
-        return self.get_cwd()
-
-    def safe_folder_join(self, *args):
-        path = os.path.join(*args)
-        return path
-
-    def store_pickle(self, *args, **kwargs):
-        pass
-
-    def get_cwd(self):
-        pass
-
-
-class CompressedSaverHelper(SaverHelper):
-    def store_pickle(self, obj, f_name, folder='.'):
-        f_name_clean = self.get_clean_file_name(f_name)
-        current_folder = self.safe_folder_join(self.get_cwd(), folder)
-        print("storing compressed pickle")
-        file_pickle = os.path.join(current_folder, 'results-{}.pc'.format(f_name_clean))
-        with bz2.open(file_pickle, 'wb') as f:
-            pickle.dump(obj, f)
-        print("storing complete.")
-        abs_path = os.path.abspath(file_pickle)
-        return abs_path
-
-
-if __name__ == "__main__":
-    main()

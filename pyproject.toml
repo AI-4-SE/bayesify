@@ -2,7 +2,7 @@
 name = "bayesify"
 version = "0.0.1"
 authors = [
-  { name="Johannes Donr", email="johannes.dorn@uni-leipzig.de" },
+  { name="Johannes Dorn", email="johannes.dorn@uni-leipzig.de" },
 ]
 description = "A package to model NFPs of configurable software systems efficiently with explicit uncertainty"
 readme = "README.md"
@@ -13,6 +13,9 @@ classifiers = [
     "Operating System :: OS Independent",
     "Intended Audience :: Science/Research",
 ]
+
+[tool.black]
+line-length = 88
 
 #[project.urls]
 #"Homepage" = "https://github.com/pypa/sampleproject"

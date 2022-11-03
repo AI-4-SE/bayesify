@@ -10,9 +10,9 @@ DEFAULT_ATTRIBUTES = ["performance", "energy", "runtime", "run-time", "time"]
 
 class ConfigSysProxy:
     def __init__(self, folder, attribute=None, val_set_size=0, val_set_rnd_seed=None):
-        self.fm_name = 'featuremodel.xml'
-        self.measurements_file_name = 'measurements.xml'
-        self.measurements_file_name_csv = 'measurements.csv'
+        self.fm_name = "featuremodel.xml"
+        self.measurements_file_name = "measurements.xml"
+        self.measurements_file_name_csv = "measurements.csv"
         self.prototype_config = None
         self.position_map = None
         self.folder = folder
@@ -22,9 +22,12 @@ class ConfigSysProxy:
         self.position_map = self.parse_fm()
         self.all_configs = self.parse_configs()
         self.redundant_ft, self.redundant_ft_names = self.remove_constant_features()
-        self.alternative_ft, self.alternative_ft_names = self.remove_alternative_features()
+        (
+            self.alternative_ft,
+            self.alternative_ft_names,
+        ) = self.remove_alternative_features()
         self.store_csv()
-        print('Finished reading measurements')
+        print("Finished reading measurements")
         self.global_opt = None
         self.get_global_opt()
 
@@ -55,7 +58,9 @@ class ConfigSysProxy:
             component_ft_of_eigencevtors, w, v = [None] * 3
         else:
             eigenvectors = v[eigen_ids]
-            component_ft_of_eigencevtors = np.nonzero(np.abs(eigenvectors > eigen_thresh))
+            component_ft_of_eigencevtors = np.nonzero(
+                np.abs(eigenvectors > eigen_thresh)
+            )
         if return_inner:
             return component_ft_of_eigencevtors, w, v
         else:
@@ -138,10 +143,13 @@ class ConfigSysProxy:
 
     def validate_conf(self, x):
         if not len(tuple(x)) == len(self.prototype_config):
-            raise ValueError('Argument {} is unlike configuration shape: {} e.g. {}'.format(x, np.array(
-                self.prototype_config).shape, self.prototype_config))
+            raise ValueError(
+                "Argument {} is unlike configuration shape: {} e.g. {}".format(
+                    x, np.array(self.prototype_config).shape, self.prototype_config
+                )
+            )
         if np.isscalar(x) or tuple(x) not in self.all_configs:
-            raise ValueError('{} appears not to be a valid configuration'.format(x))
+            raise ValueError("{} appears not to be a valid configuration".format(x))
         x_tuple = tuple(x)
 
         return x_tuple
@@ -156,9 +164,9 @@ class ConfigSysProxy:
                 break
 
         attribute_names = []
-        for element in root.iter('configurationOption'):
+        for element in root.iter("configurationOption"):
             # i.attrib["target"] = "blank"
-            name = element.find('name').text
+            name = element.find("name").text
             attribute_names.append(name)
         sorted_features = sorted(attribute_names)
         self.position_map = {}
@@ -171,7 +179,7 @@ class ConfigSysProxy:
         return self.position_map
 
     def update_prototype(self):
-        self.prototype_config = list(0. for i in list(self.position_map.keys()))
+        self.prototype_config = list(0.0 for i in list(self.position_map.keys()))
 
     def get_pos_map_from_df(self, df):
         pos = {}
@@ -191,11 +199,11 @@ class ConfigSysProxy:
                 performance_map = self.parse_configs_csv(file_candidate)
                 break
         if performance_map is None:
-            raise ValueError('No measurement files found in {}'.format(self.folder))
+            raise ValueError("No measurement files found in {}".format(self.folder))
         return performance_map
 
     def parse_configs_csv(self, file):
-        df = pd.read_csv(file, sep=';')
+        df = pd.read_csv(file, sep=";")
         print(df.head())
         # print(df)
         features = list(self.position_map.keys())
@@ -213,21 +221,21 @@ class ConfigSysProxy:
 
     def parse_configs_xml(self, file):
         root = None
-        xml_attr_name = ''
+        xml_attr_name = ""
         tree = ET.parse(file)
         root = tree.getroot()
-        row = next(root.iter('row'))
-        data = next(row.iter('data'))
-        if 'column' in data.attrib:
-            xml_attr_name = 'column'
-        elif 'columname' in data.attrib:
-            xml_attr_name = 'columname'
+        row = next(root.iter("row"))
+        data = next(row.iter("data"))
+        if "column" in data.attrib:
+            xml_attr_name = "column"
+        elif "columname" in data.attrib:
+            xml_attr_name = "columname"
         else:
-            print('Could not find xml attribute that specifies content of node')
+            print("Could not find xml attribute that specifies content of node")
             exit(7)
 
         performance_map = {}
-        for row in root.iter('row'):
+        for row in root.iter("row"):
             new_config = self.parse_config_str(xml_attr_name, row)
             perf = self.get_attribute_val(xml_attr_name, row)
             performance_map[tuple(np.array(new_config).astype(float))] = perf
@@ -235,15 +243,22 @@ class ConfigSysProxy:
         return performance_map
 
     def parse_config_str(self, xml_attr_name, xml_row):
-        config_bin_str = xml_row.find(f"data[@{xml_attr_name}='Configuration']").text.strip()
+        config_bin_str = xml_row.find(
+            f"data[@{xml_attr_name}='Configuration']"
+        ).text.strip()
         features_bin = list(
-            raw_feature.strip() for raw_feature in config_bin_str.split(',') if len(raw_feature.strip()) > 0)
+            raw_feature.strip()
+            for raw_feature in config_bin_str.split(",")
+            if len(raw_feature.strip()) > 0
+        )
         config_num_raw = xml_row.find(f"data[@{xml_attr_name}='Variable Features']")
         if config_num_raw is not None:
             config_num_str = config_num_raw.text.strip()
-            config_num_dict = dict(raw_feature.strip().split(';') for
-                                   raw_feature in config_num_str.split(',')
-                                   if len(raw_feature.strip()) > 0)
+            config_num_dict = dict(
+                raw_feature.strip().split(";")
+                for raw_feature in config_num_str.split(",")
+                if len(raw_feature.strip()) > 0
+            )
         else:
             config_num_dict = {}
 
@@ -253,7 +268,10 @@ class ConfigSysProxy:
     def get_conf_for_feature_set(self, features_bin, config_num_dict=None):
         new_config = list(self.prototype_config)
         for bin_on_feature in features_bin:
-            if bin_on_feature in self.redundant_ft_names or bin_on_feature in self.alternative_ft_names:
+            if (
+                bin_on_feature in self.redundant_ft_names
+                or bin_on_feature in self.alternative_ft_names
+            ):
                 continue
             pos = self.position_map[bin_on_feature]
             new_config[pos] = 1.0
@@ -275,12 +293,14 @@ class ConfigSysProxy:
                 if data.attrib[xml_attr_name] == self.attribute:
                     is_attribute = True
             if is_attribute:
-                measurements = list(float(m) for m in data.text.split(','))
+                measurements = list(float(m) for m in data.text.split(","))
                 perf = np.median(measurements)
                 break
         if perf is None:
-            print('Could not find performance val. Consider specifying --attribute your-attr-name')
-            print('Using row: {}'.format(row))
+            print(
+                "Could not find performance val. Consider specifying --attribute your-attr-name"
+            )
+            print("Using row: {}".format(row))
             exit(5)
         return perf
 
@@ -321,28 +341,28 @@ class ConfigSysProxy:
             fname = "measurements-cleared.csv"
         path = os.path.join(folder, fname)
         df_configs = self.get_measurement_df()
-        df_root = pd.DataFrame(data=[1] * len(df_configs), columns=['root'])
+        df_root = pd.DataFrame(data=[1] * len(df_configs), columns=["root"])
         df_configs = pd.concat([df_root, df_configs], axis=1)
-        conv_dict = {c: 'int32' for c in list(self.position_map.keys())}
+        conv_dict = {c: "int32" for c in list(self.position_map.keys())}
         df_configs = df_configs.astype(conv_dict)
-        df_configs = df_configs.rename(columns={'<y>': 'y'})
+        df_configs = df_configs.rename(columns={"<y>": "y"})
         df_configs.to_csv(path, index=False, sep=";")
         print("Stored measurement CSV file to", path)
 
-        const_path = os.path.join(folder, 'constant-features.txt')
-        alt_path = os.path.join(folder, 'alternative-features.txt')
-        del_path = os.path.join(folder, 'all-deleted-features.txt')
-        with open(const_path, 'w') as the_file:
+        const_path = os.path.join(folder, "constant-features.txt")
+        alt_path = os.path.join(folder, "alternative-features.txt")
+        del_path = os.path.join(folder, "all-deleted-features.txt")
+        with open(const_path, "w") as the_file:
             for ft in self.redundant_ft_names:
-                the_file.write('{}\n'.format(ft))
-        with open(alt_path, 'w') as the_file:
+                the_file.write("{}\n".format(ft))
+        with open(alt_path, "w") as the_file:
             for ft in self.alternative_ft_names:
-                the_file.write('{}\n'.format(ft))
-        with open(del_path, 'w') as the_file:
+                the_file.write("{}\n".format(ft))
+        with open(del_path, "w") as the_file:
             for ft in self.redundant_ft_names:
-                the_file.write('{}\n'.format(ft))
+                the_file.write("{}\n".format(ft))
             for ft in self.alternative_ft_names:
-                the_file.write('{}\n'.format(ft))
+                the_file.write("{}\n".format(ft))
 
     def remove_constant_features(self):
         df_configs = self.get_all_config_df()
@@ -355,7 +375,12 @@ class ConfigSysProxy:
                 redundant_ft_names.append(col)
                 df_configs.drop(col, inplace=True, axis=1)
         new_pos_map = self.get_pos_map_from_df(df_configs)
-        conf_dict = {tuple(row): y for row, y in zip(df_configs.values.tolist(), list(self.all_configs.values()))}
+        conf_dict = {
+            tuple(row): y
+            for row, y in zip(
+                df_configs.values.tolist(), list(self.all_configs.values())
+            )
+        }
         self.position_map = new_pos_map
         self.update_prototype()
         self.all_configs = conf_dict
@@ -363,12 +388,14 @@ class ConfigSysProxy:
 
     def get_measurement_df(self):
         configs = self.get_all_config_df()
-        config_attrs = pd.DataFrame(list(self.all_configs.values()), columns=['<y>'])
+        config_attrs = pd.DataFrame(list(self.all_configs.values()), columns=["<y>"])
         df_configs = pd.concat([configs, config_attrs], axis=1)
         return df_configs
 
     def get_all_config_df(self):
-        configs = pd.DataFrame(list(self.all_configs.keys()), columns=self.position_map.keys())
+        configs = pd.DataFrame(
+            list(self.all_configs.keys()), columns=self.position_map.keys()
+        )
         return configs
 
     def remove_alternative_features(self):
@@ -410,10 +437,17 @@ class ConfigSysProxy:
                     cliques_remaining = True
                     break
 
-        alternative_ft = [self.position_map[ft_name] for ft_name in alternative_ft_names]
+        alternative_ft = [
+            self.position_map[ft_name] for ft_name in alternative_ft_names
+        ]
 
         new_pos_map = self.get_pos_map_from_df(df_configs)
-        conf_dict = {tuple(row): y for row, y in zip(df_configs.values.tolist(), list(self.all_configs.values()))}
+        conf_dict = {
+            tuple(row): y
+            for row, y in zip(
+                df_configs.values.tolist(), list(self.all_configs.values())
+            )
+        }
         self.position_map = new_pos_map
         self.update_prototype()
         self.all_configs = conf_dict
@@ -430,11 +464,24 @@ class DistBasedRepo(ConfigSysProxy):
         2: "twise_t2.txt",
         3: "twise_t3.txt",
     }
-    SPLC_COLUMNS = ["Round", "Model", "LearningError", "LearningErrorRel", "ValidationError", "ValidationErrorRel",
-                    "ElapsedSeconds", "ModelComplexity", "BestCandidate", "BestCandidateSize", "BestCandidateScore",
-                    "TestError"]
+    SPLC_COLUMNS = [
+        "Round",
+        "Model",
+        "LearningError",
+        "LearningErrorRel",
+        "ValidationError",
+        "ValidationErrorRel",
+        "ElapsedSeconds",
+        "ModelComplexity",
+        "BestCandidate",
+        "BestCandidateSize",
+        "BestCandidateScore",
+        "TestError",
+    ]
 
-    def __init__(self, root, sys_name, attribute=None, val_set_size=0, val_set_rnd_seed=None):
+    def __init__(
+        self, root, sys_name, attribute=None, val_set_size=0, val_set_rnd_seed=None
+    ):
         self.root = self.get_common_root(root)
         self.sys_name = sys_name
 
@@ -452,12 +499,18 @@ class DistBasedRepo(ConfigSysProxy):
         return x_train, y_train, x_eval, y_eval
 
     def get_summary_folder(self):
-        f_sum = os.path.join(self.root, DistBasedRepo.PERF_PRED_BASE_FOLDER, DistBasedRepo.SUMMARY_BASE_FOLDER,
-                             self.sys_name)
+        f_sum = os.path.join(
+            self.root,
+            DistBasedRepo.PERF_PRED_BASE_FOLDER,
+            DistBasedRepo.SUMMARY_BASE_FOLDER,
+            self.sys_name,
+        )
         return f_sum
 
     def get_measurements_folder(self):
-        f_meas = os.path.join(self.root, DistBasedRepo.MEASUREMENTS_BASE_FOLDER, self.sys_name)
+        f_meas = os.path.join(
+            self.root, DistBasedRepo.MEASUREMENTS_BASE_FOLDER, self.sys_name
+        )
         return f_meas
 
     @staticmethod
@@ -499,8 +552,10 @@ class DistBasedRepo(ConfigSysProxy):
         return splc_coeff_sets
 
     def parse_line(self, line):
-        conf_decoded = line.split(' ')[1][1:-1]
-        feature_set = [f for f in conf_decoded.split('%;%') if len(f) > 0 and f != "root"]
+        conf_decoded = line.split(" ")[1][1:-1]
+        feature_set = [
+            f for f in conf_decoded.split("%;%") if len(f) > 0 and f != "root"
+        ]
         conf = tuple(self.get_conf_for_feature_set(feature_set))
         y = self.eval(conf)
         return conf, y
