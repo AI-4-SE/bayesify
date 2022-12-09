@@ -82,12 +82,13 @@ class P4Preprocessing(TransformerMixin, BaseEstimator):
         self.t_wise = t_wise
         self.rnd_seed = rnd_seed
         self.verbose = verbose
+        self.feature_names_out = None
 
     def fit(self, X, y, model_interactions=True, feature_names=None, pos_map=None):
         n_options = len(X[0])
         if feature_names:
             self.feature_names = feature_names
-            self.pos_map = None
+            self.pos_map = {opt: idx for idx, opt in enumerate(self.feature_names)}
         elif pos_map:
             self.pos_map = pos_map
             self.feature_names = list(pos_map)
@@ -106,6 +107,7 @@ class P4Preprocessing(TransformerMixin, BaseEstimator):
         start_ft_selection = time.time()
         self.print("Starting feature and interaction selection.")
         self.final_var_names, _, _ = self.get_influentials_from_lasso(X, y)
+        self.feature_names_out = list(self.final_var_names.keys())
         assert self.final_var_names, (
             "Lasso feature selection selected no options of interactions. "
             "Hence, we cannot learn any influence!"
@@ -805,7 +807,7 @@ class PyroMCMCRegressor:
         mcmc_samples=None,
     ):
         self.rv_names = (
-            get_n_words(X.shape[1]) if feature_names is None else feature_names
+            get_n_words(X.shape[1]) if feature_names is None else ['&'.join(option for option in feature) for feature in feature_names]
         )
 
         (
@@ -1048,6 +1050,7 @@ class PyroMCMCRegressor:
             if key == "influences":
                 inf_dict = {}
                 for feature_name, feature_samples in val.items():
+                    feature_name = tuple(get_feature_names_from_rv_id(feature_name))
                     inf_dict[feature_name] = az.hdi(feature_samples, hdi_prob=ci)
                 coef_cis[key] = inf_dict
             else:
