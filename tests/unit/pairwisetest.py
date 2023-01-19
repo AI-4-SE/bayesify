@@ -3,6 +3,8 @@ import seaborn as sns
 import pandas as pd
 from sklearn.pipeline import make_pipeline
 from bayesify.pairwise import PyroMCMCRegressor, P4Preprocessing
+import arviz as az
+from matplotlib import pyplot as plt
 
 
 class PreProcessingTests(unittest.TestCase):
@@ -116,6 +118,15 @@ class EvaluationTests(unittest.TestCase):
         pointwise_scores = mcmc_reg.loo(pointwise=True)
         print(pointwise_scores)
         return pointwise_scores
+
+
+class VisualisationsTests(unittest.TestCase):
+    def test_arviz_trace_plot(self):
+        mcmc_reg = train_quick_model()
+        az_data = mcmc_reg.get_arviz_data()
+        az.plot_trace(az_data, legend=True)
+        plt.tight_layout()
+        plt.show()
 
 
 def get_X_y():
