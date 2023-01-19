@@ -41,16 +41,16 @@ class PWLearnerTests(unittest.TestCase):
         print(reg)
 
     def test_fitting(self):
-        reg = self.train_quick_model()
+        reg = train_quick_model()
 
     def test_coef(self):
-        reg = self.train_quick_model()
+        reg = train_quick_model()
         coefs = reg.coef_
         self.assertIsNotNone(coefs)
 
     def test_prediction_samples(self):
         X, feature_names, y = get_X_y()
-        reg = self.train_quick_model()
+        reg = train_quick_model()
         n = 104
         predictions = reg.predict(X, n_samples=n)
         self.assertIsNotNone(predictions)
@@ -60,22 +60,8 @@ class PWLearnerTests(unittest.TestCase):
             "Did not get requested number of posterior predictive samples!",
         )
 
-    def train_quick_model(self):
-        X, feature_names, y = get_X_y()
-        reg = PyroMCMCRegressor()
-        mcmc_cores = 1
-        reg.fit(
-            X,
-            y,
-            mcmc_samples=100,
-            mcmc_tune=200,
-            feature_names=feature_names,
-            mcmc_cores=mcmc_cores,
-        )
-        return reg
-
     def test_coefs_ci(self):
-        reg = self.train_quick_model()
+        reg = train_quick_model()
         coefs_50 = reg.coef_ci(0.5)
         coefs_95 = reg.coef_ci(0.95)
 
@@ -92,7 +78,7 @@ class PWLearnerTests(unittest.TestCase):
 
 
 class PipelineTests(unittest.TestCase):
-    def test_pipiline_fit(self):
+    def test_pipeline_fit(self):
         X, _, y = get_X_y()
         preproc = P4Preprocessing()
         reg = PyroMCMCRegressor(
@@ -102,19 +88,34 @@ class PipelineTests(unittest.TestCase):
         pipeline = make_pipeline(preproc, reg)
         pipeline.fit(X, y)
 
-    def train_quick_pipeline(self):
-        X, feature_names, y = get_X_y()
-        reg = PyroMCMCRegressor()
-        mcmc_cores = 1
-        reg.fit(
-            X,
-            y,
-            mcmc_samples=100,
-            mcmc_tune=200,
-            feature_names=feature_names,
-            mcmc_cores=mcmc_cores,
-        )
-        return reg
+
+def train_quick_model():
+    X, feature_names, y = get_X_y()
+    reg = PyroMCMCRegressor()
+    mcmc_cores = 1
+    reg.fit(
+        X,
+        y,
+        mcmc_samples=100,
+        mcmc_tune=200,
+        feature_names=feature_names,
+        mcmc_cores=mcmc_cores,
+    )
+    return reg
+
+
+class EvaluationTests(unittest.TestCase):
+    def test_psis_scalar_score(self):
+        mcmc_reg = train_quick_model()
+        psis_score = mcmc_reg.loo()
+        print(psis_score)
+        return psis_score
+
+    def test_psis_pointwise_score(self):
+        mcmc_reg = train_quick_model()
+        pointwise_scores = mcmc_reg.loo(pointwise=True)
+        print(pointwise_scores)
+        return pointwise_scores
 
 
 def get_X_y():

@@ -990,9 +990,6 @@ class PyroMCMCRegressor:
             tuples.extend([("mcmc", rv_name, float(val)) for val in rv_samples.numpy()])
         return tuples
 
-    def coef_ci(self, ci: float):
-        pass
-
     def _predict_samples(self, X, n_samples: int = None, rnd_key=0):
         # Predictive(model_fast, guide=guide, num_samples=100,
         # return_sites=("measurements",))
@@ -1105,69 +1102,41 @@ class PyroMCMCRegressor:
         print_flush("Fitted model in {0:9.1} minutes.".format((total_cost) / 60))
         return pyro_reg, self.samples
 
+    def get_arviz_dims(self):
+        dims = {
+            "coefs": ["features"],
+        }
+        return dims
 
-# class PWRegressor(BaseEstimator, RegressorMixin):
-#     def __init__(
-#         self,
-#     ):
-#         """
-#         Constructor for an Uncertainty-Aware Regressor.
-#         """
-#         self.coef_ = None
-#         self.coef_samples_ = None
-#         self.pos_map = None
-#         self.reg = None
-#
-#     def fit(
-#         self,
-#         X,
-#         y,
-#         feature_names: list = None,
-#         pos_map: dict = None,
-#         mcmc_cores: int = 3,
-#         mcmc_samples: int = 1000,
-#         mcmc_tune: int = 500,
-#     ):
-#         """
-#
-#         Parameters
-#         ----------
-#
-#         X : training data
-#         y : training labels
-#         feature_names : list of names for the feaures, which are represented as columns in X - give either feature_names or pos_map
-#         pos_map : map with indexes as keys and feature names as values, e.g. {0:"optA", 1:"optB"}. Will be generated is used internally to label generated interactions - give either feature_names or pos_map
-#         mcmc_cores : Number of traces to compute in parallel during MCMC
-#         mcmc_samples : Number of effective samples to return for each random varible, i.e., for each feature influence
-#         mcmc_tune : Number of tuning samples that are discarded before conducting mcmc_samples samples
-#         """
-#         if pos_map:
-#             feature_names = list(pos_map)
-#         elif feature_names:
-#             pos_map = {opt: idx for idx, opt in enumerate(feature_names)}
-#         else:
-#             pos_map = {
-#                 opt: idx for idx, opt in zip(range(X.shape[1]), iter_all_strings())
-#             }
-#             feature_names = list(pos_map)
-#
-#         self.pos_map = pos_map
-#         self.final_var_names = list(self.pos_map.keys())
-#         self.reg = PyroMCMCRegressor(
-#             mcmc_samples=mcmc_samples, mcmc_tune=mcmc_tune, n_chains=mcmc_cores
-#         )
-#         self.reg.fit(
-#             X,
-#             y,
-#             feature_names=feature_names,
-#             pos_map=pos_map,
-#             mcmc_tune=mcmc_tune,
-#             mcmc_cores=mcmc_cores,
-#             mcmc_samples=mcmc_samples,
-#         )
-#
-#     def predict(self, *args, **kwargs):
-#         return self.reg.predict(*args, **kwargs)
+    def get_arviz_data(
+        self,
+    ):
+        coords = {
+            "features": self.rv_names,
+        }
+        dims = self.get_arviz_dims()
+        idata_kwargs = {
+            "dims": dims,
+            "coords": coords,
+        }
+        az_data = az.from_numpyro(self.mcmc, num_chains=self.n_chains, **idata_kwargs)
+
+        return az_data
+
+    def loo(self, pointwise=False, scale="log"):
+        """
+        Returns the PSIS information criterion. Used to compare models.
+        If using "log" scale, higher is better. Some literature uses "deviance", which equals -2 * log-scale-PSIS.
+        If pointwise=True, returns the posterior log likelihood of each training data point.
+        Returns the aggregated PSIS score (sum of the log likelihoods).
+        """
+        az_data = self.get_arviz_data()
+        psis = az.loo(az_data, pointwise=pointwise, scale=scale)
+        if pointwise:
+            elpd_psis = psis.loo_i
+        else:
+            elpd_psis = psis.loo
+        return elpd_psis
 
 
 def assert_ci(ci):
