@@ -549,6 +549,7 @@ class P4Preprocessing(TransformerMixin, BaseEstimator):
         lars = LassoCV(
             cv=3,
             positive=False,
+            max_iter=5000,
         )  # .fit(train_x_2d, train_y)
         if self.interactions_possible:
             poly_mapping = PolynomialFeatures(
@@ -807,7 +808,9 @@ class PyroMCMCRegressor:
         mcmc_samples=None,
     ):
         self.rv_names = (
-            get_n_words(X.shape[1]) if feature_names is None else ['&'.join(option for option in feature) for feature in feature_names]
+            get_n_words(X.shape[1])
+            if feature_names is None
+            else ["&".join(option for option in feature) for feature in feature_names]
         )
 
         (
