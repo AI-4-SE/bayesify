@@ -11,14 +11,16 @@ setuptools.setup(
     packages=setuptools.find_packages(),
     install_requires=[
         "numpy~=1.23",
-        "matplotlib~=3.5.1",
+        "matplotlib~=3.6",
         "pandas~=1.5",
         "arviz==0.12.1",
         "seaborn~=0.11.2",
-        "scipy~=1.8.0",
+        "scipy==1.8.0",
         "scikit-learn~=1.1.0rc1",
         "numpyro[cpu]~=0.10",
         "networkx~=2.8",
         "statsmodels~=0.13.2",
+        "jax<0.4.24",
+        "jaxlib<0.4.24",
     ],
 )
