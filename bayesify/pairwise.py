@@ -1001,7 +1001,8 @@ class PyroMCMCRegressor:
         pred = Predictive(self.model, num_samples=n)
         posterior_samples = pred(prngkey, X, None)
         y_pred = posterior_samples["measurements"]
-        return y_pred
+        y_pred_np = np.array(y_pred)
+        return y_pred_np
 
     def predict(self, X, n_samples: int = None, ci: float = None):
         """
