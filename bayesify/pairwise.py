@@ -921,7 +921,9 @@ class PyroMCMCRegressor:
         )
 
         base_prior = dist.Normal(jnp.array(root_mean), jnp.array(root_std))
-        error_prior = dist.Exponential(jnp.array(err_mean))
+        # OLD VERSION WITHOUT 1/ err_mean
+        #error_prior = dist.Exponential(jnp.array(err_mean))
+        error_prior = dist.Exponential(1/jnp.array(err_mean))
         coef_prior = dist.Normal(
             jnp.array(means_weighted),
             jnp.array(stds_weighted),
