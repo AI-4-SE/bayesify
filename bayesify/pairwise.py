@@ -769,13 +769,13 @@ class PyroMCMCRegressor:
         base = numpyro.sample(
             "base",
             # dist.Normal(0, 1)  # dist.Normal(self.prior_root_mean, self.prior_root_std)
-            base_prior
+            base_prior,
             # "base",
             # base_prior,
         )
         rnd_influences = numpyro.sample(
             "coefs",
-            infl_prior
+            infl_prior,
             # dist.Normal(jnp.zeros(data.shape[1]), jnp.ones(data.shape[1]))
             # dist.Normal(
             #     self.prior_coef_means,
@@ -922,8 +922,8 @@ class PyroMCMCRegressor:
 
         base_prior = dist.Normal(jnp.array(root_mean), jnp.array(root_std))
         # OLD VERSION WITHOUT 1/ err_mean
-        #error_prior = dist.Exponential(jnp.array(err_mean))
-        error_prior = dist.Exponential(1/jnp.array(err_mean))
+        # error_prior = dist.Exponential(jnp.array(err_mean))
+        error_prior = dist.Exponential(1 / jnp.array(err_mean))
         coef_prior = dist.Normal(
             jnp.array(means_weighted),
             jnp.array(stds_weighted),
