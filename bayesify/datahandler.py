@@ -577,5 +577,5 @@ class DistBasedRepo(ConfigSysProxy):
         for term in terms:
             term_comps = term.split(" * ")
             coeff, ft = term_comps[0], tuple(term_comps[1:])
-            coeff_map[ft] = coeff_map
+            coeff_map[ft] = float(coeff)
         return coeff_map
