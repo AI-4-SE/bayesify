@@ -413,19 +413,6 @@ class P4Preprocessing(TransformerMixin, BaseEstimator):
         pred = self.top_candidate_lr.predict(X_)
         return pred
 
-    def transform_data_to_candidate_features(self, candidate, train_x):
-        mapped_features = []
-        for term in candidate:
-            idx = [self.pos_map[ft] for ft in term]
-            selected_cols = np.array(train_x)[:, idx]
-            if len(idx) > 1:
-                mapped_feature = np.product(selected_cols, axis=1).ravel()
-            else:
-                mapped_feature = selected_cols.ravel()
-            mapped_features.append(list(mapped_feature))
-        reshaped_mapped_x = np.atleast_2d(mapped_features).T
-        return reshaped_mapped_x
-
     def fit_and_eval_lin_reg(self, lin_reg_features, reg_proto=None, verbose=True):
         if not reg_proto:
             reg_proto = Ridge()
