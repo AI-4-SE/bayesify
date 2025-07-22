@@ -9,7 +9,9 @@ DEFAULT_ATTRIBUTES = ["performance", "energy", "runtime", "run-time", "time"]
 
 
 class ConfigSysProxy:
+    """Utility for loading and querying configuration measurements."""
     def __init__(self, folder, attribute=None, val_set_size=0, val_set_rnd_seed=None):
+        """Read configuration data from ``folder`` and prepare it for modeling."""
         self.fm_name = "featuremodel.xml"
         self.measurements_file_name = "measurements.xml"
         self.measurements_file_name_csv = "measurements.csv"
@@ -155,6 +157,7 @@ class ConfigSysProxy:
         return x_tuple
 
     def parse_fm(self):
+        """Parse the feature model and build ``self.position_map``."""
         top_files = os.listdir(self.folder)
         root = None
         for file in top_files:
@@ -188,6 +191,7 @@ class ConfigSysProxy:
         return pos
 
     def parse_configs(self):
+        """Load configuration measurements from the configured folder."""
         top_files = os.listdir(self.folder)
         performance_map = None
         for file in top_files:
@@ -203,6 +207,7 @@ class ConfigSysProxy:
         return performance_map
 
     def parse_configs_csv(self, file):
+        """Parse measurements stored in CSV format."""
         df = pd.read_csv(file, sep=";")
         print(df.head())
         # print(df)
@@ -220,6 +225,7 @@ class ConfigSysProxy:
         return performance_map
 
     def parse_configs_xml(self, file):
+        """Parse measurement files stored in the SPLC XML format."""
         root = None
         xml_attr_name = ""
         tree = ET.parse(file)
@@ -243,6 +249,7 @@ class ConfigSysProxy:
         return performance_map
 
     def parse_config_str(self, xml_attr_name, xml_row):
+        """Convert a configuration row from the XML file into a feature vector."""
         config_bin_str = xml_row.find(
             f"data[@{xml_attr_name}='Configuration']"
         ).text.strip()
@@ -266,6 +273,7 @@ class ConfigSysProxy:
         return new_config
 
     def get_conf_for_feature_set(self, features_bin, config_num_dict=None):
+        """Create a numeric configuration vector from a set of feature names."""
         new_config = list(self.prototype_config)
         for bin_on_feature in features_bin:
             if (
@@ -284,6 +292,7 @@ class ConfigSysProxy:
         return new_config
 
     def get_attribute_val(self, xml_attr_name, row):
+        """Return the performance metric encoded in a measurement row."""
         perf = None
         for data in row:
             is_attribute = False
