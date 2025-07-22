@@ -64,6 +64,13 @@ def get_n_words(n_options):
 
 
 class P4Preprocessing(TransformerMixin, BaseEstimator):
+    """Preprocess configuration data for pairwise performance modeling.
+
+    This transformer performs feature selection using a Lasso regression and,
+    optionally, generates interaction terms between influential features.  It
+    mirrors the preprocessing used in the \*Mastering Uncertainty in Performance
+    Estimation of Configurable Software Systems\* paper.
+    """
     def __init__(
         self,
         inters_only_between_influentials=True,
@@ -72,6 +79,24 @@ class P4Preprocessing(TransformerMixin, BaseEstimator):
         rnd_seed=0,
         verbose=False,
     ):
+        """Initialize the preprocessing step.
+
+        Parameters
+        ----------
+        inters_only_between_influentials : bool, optional
+            If True, only interaction terms between influential features are
+            considered.
+        prior_broaden_factor : int, optional
+            Factor used when computing priors for Bayesian models.
+        t_wise : int or None, optional
+            Parameter controlling t-wise interaction consideration. When set to
+            ``None`` interactions are derived from the number of options.
+        rnd_seed : int, optional
+            Random seed used for deterministic behaviour when sampling.
+        verbose : bool, optional
+            If True, the preprocessing will output additional information to the
+            console.
+        """
         self.pos_map = None
         self.cost_ft_selection = None
         self.final_var_names = None
@@ -85,6 +110,25 @@ class P4Preprocessing(TransformerMixin, BaseEstimator):
         self.feature_names_out = None
 
     def fit(self, X, y, model_interactions=True, feature_names=None, pos_map=None):
+        """Fit the preprocessing model to the data.
+
+        The method performs feature selection using Lasso and determines
+        whether interaction terms should be created.
+
+        Parameters
+        ----------
+        X : array-like
+            Training configurations.
+        y : array-like
+            Observed measurements for ``X``.
+        model_interactions : bool, optional
+            If True, candidate interaction terms will be considered.
+        feature_names : list of str, optional
+            Explicit names for configuration options.
+        pos_map : dict, optional
+            Mapping from feature names to column indices. When provided no names
+            will be generated automatically.
+        """
         n_options = len(X[0])
         if feature_names:
             self.feature_names = feature_names
@@ -120,10 +164,12 @@ class P4Preprocessing(TransformerMixin, BaseEstimator):
         return self
 
     def transform(self, X):
+        """Transform ``X`` using the features selected during :meth:`fit`."""
         rv_names, X = self.get_p4_train_data(X)
         return X
 
     def fit_transform(self, X, y=None, *fit_args, **fit_params):
+        """Fit to the data and return the transformed design matrix."""
         if y is None:
             print("Need y to do preprocessing! Returning untouched X.")
             return X
@@ -137,6 +183,7 @@ class P4Preprocessing(TransformerMixin, BaseEstimator):
         #     return X
 
     def transform_data_to_candidate_features(self, candidate, train_x):
+        """Map a candidate term specification to concrete feature values."""
         mapped_features = []
         for term in candidate:
             idx = [self.pos_map[ft] for ft in term]
@@ -154,6 +201,7 @@ class P4Preprocessing(TransformerMixin, BaseEstimator):
             print(*args, **kwargs)
 
     def generate_valid_combinations(self, first_stage_influential_ft, all_ft):
+        """Return all valid interaction pairs given the current dataset."""
         print_flush("Generating Interaction Terms")
         if self.inters_only_between_influentials:
             all_inter_pairs = list(
@@ -179,11 +227,13 @@ class P4Preprocessing(TransformerMixin, BaseEstimator):
         return valid_pairs
 
     def not_constant_term(self, vals_a_np, vals_b_np):
+        """Return True if the product of ``vals_a_np`` and ``vals_b_np`` is not constant."""
         vals_prod = np.multiply(vals_a_np, vals_b_np)
         is_non_constant = len(np.unique(vals_prod)) > 1
         return is_non_constant
 
     def not_constant_term_cheap(self, vals_a_np, vals_b_np, train_set, slice_size=500):
+        """Cheaper check for constant interaction terms using sampling."""
         n_samples = len(vals_a_np)
         is_non_constant = False
         duplicates_any_features = True
@@ -209,6 +259,7 @@ class P4Preprocessing(TransformerMixin, BaseEstimator):
         return False
 
     def vector_inner_prod_slow(self, a, b, slice_size=1000):
+        """Compute the element-wise product of ``a`` and ``b`` in slices."""
         length = len(a)
         products = []
         for slice_start in range(0, length, slice_size):
@@ -223,6 +274,7 @@ class P4Preprocessing(TransformerMixin, BaseEstimator):
     def get_ft_and_inters_from_rvs(
         self, inter_trace, noise_str, p_mass, ft_inter_names
     ):
+        """Extract significant main effects and interactions from a trace."""
         significant_inter_ft = self.get_significant_fts(
             inter_trace, noise_str, p_mass, ft_inter_names
         )
@@ -732,12 +784,24 @@ def iter_all_strings():
 
 
 class PyroMCMCRegressor:
+    """Bayesian linear regression using NumPyro's MCMC."""
     def __init__(
         self,
         mcmc_samples: int = 1000,
         mcmc_tune=1000,
         n_chains=1,
     ):
+        """Create a new regressor.
+
+        Parameters
+        ----------
+        mcmc_samples : int
+            Number of MCMC samples to draw after warm-up.
+        mcmc_tune : int
+            Number of warm-up steps for the sampler.
+        n_chains : int
+            How many chains to run in parallel.
+        """
         self.error_prior = None
         self.infl_prior = None
         self.base_prior = None
@@ -757,6 +821,7 @@ class PyroMCMCRegressor:
         infl_prior=None,
         error_prior=None,
     ):
+        """NumPyro model describing the linear regression."""
         base_prior = self.base_prior if base_prior is None else base_prior
         self.base_prior = base_prior
         infl_prior = self.infl_prior if infl_prior is None else infl_prior
